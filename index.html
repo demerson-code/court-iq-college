@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="theme-color" content="#FF4D8B">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self';">
+  <meta name="theme-color" content="#00B140">
   <meta name="description" content="Court IQ College — college-level volleyball lineup tool. Position-specialized players, 5-1 / 6-2 systems, libero rules.">
   <title>Court IQ College — Volleyball Lineup Tool</title>
   <link rel="stylesheet" href="styles.css">
@@ -12,12 +13,7 @@
   <header class="topbar">
     <div class="brand-row">
       <span class="ball">🏐</span>
-      <h1 class="brand">Court IQ</h1>
-    </div>
-    <!-- TODO(college rebrand): replace icon + name with the friend's college team identity -->
-    <div class="team-badge" aria-label="Team placeholder">
-      <span class="team-badge-icon" aria-hidden="true">🏐</span>
-      <span class="team-badge-name">COLLEGE</span>
+      <h1 class="brand">Court IQ — Marshall Thundering Herd</h1>
     </div>
     <button class="icon-btn" id="shareBtn" title="Copy share link" aria-label="Share">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>

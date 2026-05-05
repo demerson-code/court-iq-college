@@ -16,7 +16,7 @@ A college-level volleyball lineup tool. **Forked from [Court IQ](https://github.
 - Animated court with manual rotation cycling
 - Drag-and-drop swaps (court ↔ court, bench ↔ court, court ↔ bench)
 - Sort dropdowns on roster and bench (AVG / Name, asc/desc)
-- Help system (pink "?" icons) with definition popovers
+- Help system ("?" icons) with definition popovers
 - Strict / Loose lineup mode toggle
 - Responsive across phone / tablet / desktop
 

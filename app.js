@@ -64,7 +64,20 @@ const POSITION_NAMES = {
   6: 'Mid Back'
 };
 
-const SAVE_KEY = 'court_iq_v1';
+// safeStorage: localStorage with try/catch + in-memory fallback for mobile Safari private mode.
+const safeStorage = (() => {
+  let inMemory = {};
+  const test = () => { try { localStorage.setItem('__t','1'); localStorage.removeItem('__t'); return true; } catch { return false; } };
+  const ok = test();
+  return {
+    get: (k) => ok ? localStorage.getItem(k) : (inMemory[k] ?? null),
+    set: (k, v) => { if (ok) try { localStorage.setItem(k, v); } catch { inMemory[k] = v; } else inMemory[k] = v; },
+    remove: (k) => { if (ok) try { localStorage.removeItem(k); } catch {} delete inMemory[k]; }
+  };
+})();
+
+const STORAGE_KEY = 'court_iq_college_v1';
+const LEGACY_KEY = 'court_iq_v1'; // youth-rec collision; one-time migrate
 
 /* ===== State ===== */
 const TEAM_NAME = 'College';   // TODO: replace with friend's actual college team name
@@ -143,9 +156,7 @@ function save(opts = {}) {
     rosterSort: S.rosterSort,
     benchSort: S.benchSort
   };
-  try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
-  } catch (e) { /* quota / private mode */ }
+  safeStorage.set(STORAGE_KEY, JSON.stringify(payload));
 
   // Auto-sync the URL hash so the address bar always reflects current state.
   // Debounced so rapid edits don't thrash history.replaceState.
@@ -173,7 +184,13 @@ function load() {
     return { fromUrl: true };
   }
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    let raw = safeStorage.get(STORAGE_KEY);
+    if (!raw) {
+      const legacy = safeStorage.get(LEGACY_KEY);
+      // Silent migration: copy youth-rec record into the college-scoped key.
+      // Don't delete the legacy key — youth tool still owns it.
+      if (legacy) { safeStorage.set(STORAGE_KEY, legacy); raw = legacy; }
+    }
     if (raw) applyLoadedState(JSON.parse(raw));
   } catch (e) { /* ignore */ }
   return { fromUrl: false };
@@ -355,7 +372,7 @@ function openHelp(key) {
   bodyEl.replaceChildren();
   for (const item of entry.body) {
     if (item.p) bodyEl.appendChild(el('p', { text: item.p }));
-    else if (item.h) bodyEl.appendChild(el('h4', { text: item.h, attrs: { style: 'font-size:14px;margin:14px 0 6px;color:var(--pink-dark);' } }));
+    else if (item.h) bodyEl.appendChild(el('h4', { text: item.h, attrs: { style: 'font-size:14px;margin:14px 0 6px;color:var(--green-dark);' } }));
     else if (item.dl) {
       const dl = document.createElement('dl');
       for (const [t, d] of item.dl) {
