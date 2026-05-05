@@ -629,198 +629,514 @@ async function copyShareUrl() {
   }
 }
 
-/* ===== Algorithm =====
-   NOTE: this entire block (down through optimizeLooseArrangement) is the
-   inherited youth-rec optimizer and is scheduled for full deletion in
-   Block 2. The new SKILLS keys don't match the old POS_MULT table, so
-   the optimizer here produces a degenerate (avg-skill * coach-weight)
-   lineup until Block 2 lands. */
-function playerScoreAtPosition(player, pos) {
-  let score = 0;
-  for (const s of SKILLS) {
-    score += (player.skills[s] || 0) * (S.weights[s] || 0);
+/* ===== Algorithm (pure functions) =====
+   Role-locked, rotation-aware optimizer for 5-1 and 6-2 systems.
+   Modes: balanced (maximin), best6, sr, serving.
+   Public entry: generateLineup(state). Returns the new shape AND a
+   back-compat layer (mode/starting6/rotations/rotationScores/bench/...)
+   so the existing UI keeps working until Block 3 rebuilds the lineup tab.
+*/
+
+const SYSTEM_REQUIREMENTS = {
+  '5-1': { S: 1, OPP: 1, OH: 2, MB: 2, L: 1 },
+  '6-2': { S: 2, OPP: 0, OH: 2, MB: 2, L: 1 }
+};
+
+// Per-call memo cleared at the top of generateLineup.
+let _fitCache = null;
+
+function playerFitForRole(player, role, settings) {
+  if (!player || !role) return 0;
+  const weights = ROLE_SKILL_WEIGHTS[role];
+  if (!weights) return 0;
+  const cacheKey = _fitCache && `${player.id}|${role}|${settings && settings.showSetterTempo ? 1 : 0}`;
+  if (_fitCache && _fitCache.has(cacheKey)) return _fitCache.get(cacheKey);
+  let total = 0, weightSum = 0;
+  for (const skill of SKILLS) {
+    const w = weights[skill] || 0;
+    if (w === 0) continue;
+    total += (player.skills[skill] || 0) * w;
+    weightSum += w;
   }
-  return score;
+  if (role === 'S' && settings && settings.showSetterTempo) {
+    const tempoWeight = 5;
+    total += (player.setterTempo || 5) * tempoWeight;
+    weightSum += tempoWeight;
+  }
+  const fit = weightSum > 0 ? total / weightSum : 0;
+  if (_fitCache) _fitCache.set(cacheKey, fit);
+  return fit;
 }
 
-function playerAvgValue(player) {
-  let sum = 0;
-  for (let p = 1; p <= 6; p++) sum += playerScoreAtPosition(player, p);
-  return sum / 6;
+function validRolesForPlayer(player) {
+  const out = [];
+  const pri = player.positions && player.positions[0];
+  const sec = player.positions && player.positions[1];
+  if (pri) out.push(pri);
+  if (sec && sec !== pri) out.push(sec);
+  return out;
 }
 
+// Used by sort and other UI bits — average of the 6 college skills.
 function playerSkillRaw(player) {
   let s = 0;
   for (const k of SKILLS) s += (player.skills[k] || 0);
   return s / SKILLS.length;
 }
 
-function pickBestSix(availablePlayers) {
-  return [...availablePlayers]
-    .map(p => ({ p, v: playerAvgValue(p) }))
-    .sort((a, b) => b.v - a.v)
-    .slice(0, 6)
-    .map(x => x.p);
+// Back-compat shim for the breakdown popup at line ~1200. The popup shows
+// per-zone scores; in the role-locked model the score doesn't vary by zone,
+// so we return the player's primary-role fit for any pos. Block 3 rebuilds
+// the popup to show role fits / per-rotation contributions instead.
+function playerScoreAtPosition(player, _pos) {
+  if (!player) return 0;
+  const settings = (S && S.settings) || defaultSettings();
+  const role = (player.positions && player.positions[0]) || 'OH';
+  return playerFitForRole(player, role, settings);
 }
 
-function permute(arr, cb) {
-  // Heap's algorithm — generates all permutations of arr.
-  const n = arr.length;
-  const a = arr.slice();
-  const c = new Array(n).fill(0);
-  cb(a);
-  let i = 0;
-  while (i < n) {
-    if (c[i] < i) {
-      const swap = i % 2 === 0 ? 0 : c[i];
-      const tmp = a[swap]; a[swap] = a[i]; a[i] = tmp;
-      cb(a);
-      c[i]++;
-      i = 0;
-    } else {
-      c[i] = 0;
-      i++;
+/* chooseStarters: backtracking with primary-preference + best-case pruning.
+   Returns { starters: { OH:[..], MB:[..], S:[..], OPP:[..], L:[..], DS:[] },
+             validation: null | reason-string }. */
+function chooseStarters(roster, system, mode, settings) {
+  const reqs = SYSTEM_REQUIREMENTS[system];
+  if (!reqs) return { starters: null, validation: `Unknown system: ${system}` };
+
+  // Quick coverage check + clearer error messages.
+  const counts = { OH: 0, MB: 0, S: 0, OPP: 0, L: 0, DS: 0 };
+  for (const p of roster) {
+    for (const r of validRolesForPlayer(p)) counts[r] = (counts[r] || 0) + 1;
+  }
+  for (const role of Object.keys(reqs)) {
+    const need = reqs[role];
+    if (need > 0 && (counts[role] || 0) < need) {
+      const label = ROLE_LABELS[role].toLowerCase();
+      return { starters: null, validation: `Need ${need} ${label}${need > 1 ? 's' : ''} for ${system} system, found ${counts[role] || 0}.` };
     }
   }
+
+  // Slots to fill (one entry per slot, repeated for roles needing multiple).
+  const rolesToFill = [];
+  for (const role of Object.keys(reqs)) {
+    for (let i = 0; i < reqs[role]; i++) rolesToFill.push(role);
+  }
+  rolesToFill.sort((a, b) => (counts[a] || 0) - (counts[b] || 0)); // scarcest first
+
+  // Per-role candidate lists, sorted: primaries first, then by descending fit.
+  const candidatesByRole = {};
+  for (const role of new Set(rolesToFill)) {
+    candidatesByRole[role] = roster
+      .filter(p => validRolesForPlayer(p).includes(role))
+      .map(p => ({
+        p,
+        fit: playerFitForRole(p, role, settings),
+        primary: (p.positions && p.positions[0]) === role
+      }))
+      .sort((a, b) => (b.primary - a.primary) || (b.fit - a.fit));
+  }
+
+  let best = null;
+  const usedIds = new Set();
+  const assignments = [];
+
+  function recurse(idx, runningScore) {
+    if (idx === rolesToFill.length) {
+      if (!best || runningScore > best.score) {
+        best = { score: runningScore, assignments: assignments.map(a => ({ ...a })) };
+      }
+      return;
+    }
+    // Best-case prune: optimistic upper bound.
+    if (best) {
+      let upper = runningScore;
+      for (let j = idx; j < rolesToFill.length; j++) {
+        const cands = candidatesByRole[rolesToFill[j]];
+        const top = cands.find(c => !usedIds.has(c.p.id));
+        if (top) upper += top.fit; else return; // no candidate -> dead branch
+      }
+      if (upper <= best.score) return;
+    }
+    const role = rolesToFill[idx];
+    const cands = candidatesByRole[role];
+    for (const c of cands) {
+      if (usedIds.has(c.p.id)) continue;
+      usedIds.add(c.p.id);
+      assignments.push({ role, player: c.p });
+      recurse(idx + 1, runningScore + c.fit);
+      assignments.pop();
+      usedIds.delete(c.p.id);
+    }
+  }
+  recurse(0, 0);
+
+  if (!best) return { starters: null, validation: 'Could not find a valid starter set.' };
+
+  const starters = { OH: [], MB: [], S: [], OPP: [], L: [], DS: [] };
+  for (const a of best.assignments) starters[a.role].push(a.player);
+  return { starters, validation: null };
 }
 
-/* Strict: 6 players cycle through 6 positions. Sum of rotation scores is
-   a constant for any given 6 players (each player visits each position
-   exactly once). We optimize for:
-     1. max(min rotation score) — no weak rotations
-     2. low variance — balanced rotations
-     3. strong server in pos 1 at rotation 0 — tiebreaker
-*/
-function optimizeStrictArrangement(six) {
-  let best = null;
-  permute(six, perm => {
-    const rotScores = [];
-    for (let r = 0; r < 6; r++) {
-      let total = 0;
-      for (let startPos = 1; startPos <= 6; startPos++) {
-        const player = perm[startPos - 1];
-        const currentPos = ((startPos - 1 - r + 6) % 6) + 1;
-        total += playerScoreAtPosition(player, currentPos);
-      }
-      rotScores.push(total);
+/* Compute 6 rotations from a starting zone-1..6 order.
+   Volleyball rotation moves clockwise: zone 2 -> 1, 1 -> 6, ..., 3 -> 2.
+   So zone z in rotation r is occupied by the player who started at zone
+   ((z - 1 + r) mod 6) + 1. */
+function _rotationsFromStartOrder(startOrder) {
+  const rotations = [];
+  for (let r = 0; r < 6; r++) {
+    const at = z => startOrder[((z - 1 + r) % 6 + 6) % 6];
+    rotations.push({
+      // front row left-to-right is zones 4, 3, 2; back row left-to-right is 5, 6, 1.
+      frontRow: [at(4), at(3), at(2)],
+      backRow:  [at(5), at(6), at(1)],
+      server:   at(1)
+    });
+  }
+  return rotations;
+}
+
+function _enumerate51Arrangements(starters) {
+  const arrangements = [];
+  const setter = starters.S[0], opp = starters.OPP[0];
+  const [OH1, OH2] = starters.OH;
+  const [MB1, MB2] = starters.MB;
+  for (let setterZone = 1; setterZone <= 6; setterZone++) {
+    const oppZone = ((setterZone - 1 + 3) % 6) + 1; // opposite (3 zones away)
+    const remaining = [1, 2, 3, 4, 5, 6].filter(z => z !== setterZone && z !== oppZone);
+    const pairs = [];
+    for (const z of remaining) {
+      const opp = ((z - 1 + 3) % 6) + 1;
+      if (!pairs.find(pr => pr.includes(z))) pairs.push([z, opp]);
     }
-    const minRot = Math.min(...rotScores);
-    const meanRot = rotScores.reduce((a, b) => a + b, 0) / 6;
-    const variance = rotScores.reduce((a, b) => a + (b - meanRot) ** 2, 0) / 6;
-    const serverSkill = perm[0].skills.serving || 0;
-    const score = minRot * 1000 - variance * 0.5 + serverSkill * 0.1;
+    for (const ohPairIdx of [0, 1]) {
+      const ohPair = pairs[ohPairIdx];
+      const mbPair = pairs[1 - ohPairIdx];
+      for (const ohOrder of [[OH1, OH2], [OH2, OH1]]) {
+        for (const mbOrder of [[MB1, MB2], [MB2, MB1]]) {
+          const startOrder = new Array(6);
+          startOrder[setterZone - 1] = setter;
+          startOrder[oppZone - 1] = opp;
+          startOrder[ohPair[0] - 1] = ohOrder[0];
+          startOrder[ohPair[1] - 1] = ohOrder[1];
+          startOrder[mbPair[0] - 1] = mbOrder[0];
+          startOrder[mbPair[1] - 1] = mbOrder[1];
+          arrangements.push({ startOrder, rotations: _rotationsFromStartOrder(startOrder) });
+        }
+      }
+    }
+  }
+  return arrangements;
+}
+
+function _enumerate62Arrangements(starters) {
+  const arrangements = [];
+  const [S0, S1] = starters.S;
+  const [OH1, OH2] = starters.OH;
+  const [MB1, MB2] = starters.MB;
+  for (let s0Zone = 1; s0Zone <= 6; s0Zone++) {
+    const s1Zone = ((s0Zone - 1 + 3) % 6) + 1;
+    const remaining = [1, 2, 3, 4, 5, 6].filter(z => z !== s0Zone && z !== s1Zone);
+    const pairs = [];
+    for (const z of remaining) {
+      const opp = ((z - 1 + 3) % 6) + 1;
+      if (!pairs.find(pr => pr.includes(z))) pairs.push([z, opp]);
+    }
+    for (const ohPairIdx of [0, 1]) {
+      const ohPair = pairs[ohPairIdx];
+      const mbPair = pairs[1 - ohPairIdx];
+      for (const ohOrder of [[OH1, OH2], [OH2, OH1]]) {
+        for (const mbOrder of [[MB1, MB2], [MB2, MB1]]) {
+          const startOrder = new Array(6);
+          startOrder[s0Zone - 1] = S0;
+          startOrder[s1Zone - 1] = S1;
+          startOrder[ohPair[0] - 1] = ohOrder[0];
+          startOrder[ohPair[1] - 1] = ohOrder[1];
+          startOrder[mbPair[0] - 1] = mbOrder[0];
+          startOrder[mbPair[1] - 1] = mbOrder[1];
+          arrangements.push({ startOrder, rotations: _rotationsFromStartOrder(startOrder) });
+        }
+      }
+    }
+  }
+  return arrangements;
+}
+
+function arrangeRotation(starters, system) {
+  if (system === '5-1') return _enumerate51Arrangements(starters);
+  if (system === '6-2') return _enumerate62Arrangements(starters);
+  return [];
+}
+
+/* scoreRotation: applies libero swap (per ruleset rules) then sums per-player
+   fits. Mode-specific accents added to back-row contributions. */
+function scoreRotation(rotation, mode, libero, ruleset, settings) {
+  let frontRow = rotation.frontRow.slice();
+  let backRow = rotation.backRow.slice();
+
+  if (libero && libero.player) {
+    const replaces = libero.replaces || ['MB'];
+    const idx = backRow.findIndex(p => p && replaces.includes(p.positions && p.positions[0]));
+    if (idx >= 0) {
+      // idx 2 == zone 1 (server). If libero would land at server slot and ruleset
+      // disallows libero serving, skip the swap for that rotation (the original
+      // back-row replacement player serves).
+      const isServerSlot = idx === 2;
+      const liberoCanServeHere = ruleset && ruleset.liberoMayServe;
+      if (!(isServerSlot && !liberoCanServeHere)) {
+        backRow[idx] = libero.player;
+      }
+    }
+  }
+
+  let sum = 0;
+  for (const p of frontRow) {
+    if (!p) continue;
+    const role = (p.positions && p.positions[0]) || 'OH';
+    sum += playerFitForRole(p, role, settings);
+  }
+  for (const p of backRow) {
+    if (!p) continue;
+    const role = (p.positions && p.positions[0]) || 'DS';
+    let s = playerFitForRole(p, role, settings);
+    // Mode accents on back-row contribution.
+    if (mode === 'sr') s += (p.skills.serveReceive || 0) * 0.5;
+    else if (mode === 'serving') s += (p.skills.serving || 0) * 0.5;
+    sum += s;
+  }
+  return sum;
+}
+
+/* applySubPatterns: pure transform — given a rotation and the patterns array
+   plus this rotation's index (0..5), returns a new rotation reflecting any
+   pattern whose trigger fires at this index. */
+function applySubPatterns(rotation, patterns, rotationIndex) {
+  if (!patterns || patterns.length === 0) return rotation;
+  const out = {
+    frontRow: rotation.frontRow.slice(),
+    backRow: rotation.backRow.slice(),
+    server: rotation.server
+  };
+  for (const pat of patterns) {
+    if (!pat || !pat.trigger || pat.trigger.rotationIndex !== rotationIndex) continue;
+    if (pat.trigger.event !== 'in') continue;
+    const outId = pat.out, inPlayer = pat.in;
+    if (!outId || !inPlayer) continue;
+    const fIdx = out.frontRow.findIndex(p => p && p.id === outId);
+    if (fIdx >= 0) { out.frontRow[fIdx] = inPlayer; continue; }
+    const bIdx = out.backRow.findIndex(p => p && p.id === outId);
+    if (bIdx >= 0) {
+      out.backRow[bIdx] = inPlayer;
+      if (bIdx === 2) out.server = inPlayer;
+    }
+  }
+  return out;
+}
+
+/* scoreLineup: top-level scoring used by the optimizer.
+   Returns { score, perRotationScores }. */
+function scoreLineup(arrangement, mode, libero, patterns, ruleset, settings) {
+  const rotations = arrangement.rotations || arrangement;
+  const scores = rotations.map((rot, i) => {
+    const effective = applySubPatterns(rot, patterns, i);
+    return scoreRotation(effective, mode, libero, ruleset, settings);
+  });
+  if (mode === 'best6') {
+    return { score: scores[0], perRotationScores: scores };
+  }
+  // 'balanced', 'sr', 'serving' all use maximin with avg tiebreaker for now.
+  // Block 5's match-day flow can refine sr/serving to score the 3 specific rotations
+  // where the team is receiving / serving rather than all 6.
+  const min = Math.min.apply(null, scores);
+  const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+  return { score: min * 1000 + avg, perRotationScores: scores };
+}
+
+/* SUB_PATTERN_TEMPLATES: seed templates for Block 3's sub-pattern editor. */
+const SUB_PATTERN_TEMPLATES = {
+  'setter-sub-5-1': {
+    label: 'Setter sub (5-1)',
+    description: 'Sub a back-row OPP/DS for the setter when she rotates to back row, then sub her back when the setter rotates to front.',
+    out: null, in: null,
+    trigger: { rotationIndex: 3, event: 'in' },
+    return:  { rotationIndex: 0, event: 'in' }
+  },
+  'mb-ds-sub': {
+    label: 'MB → DS',
+    description: 'Sub a defensive specialist for a middle blocker when she rotates to the back row.',
+    out: null, in: null,
+    trigger: { rotationIndex: 3, event: 'in' },
+    return:  { rotationIndex: 0, event: 'in' }
+  },
+  'power-6-sub': {
+    label: 'Power-6',
+    description: 'Subs to keep your strongest 6 on the floor as much as possible.',
+    out: null, in: null,
+    trigger: { rotationIndex: 3, event: 'in' },
+    return:  { rotationIndex: 0, event: 'in' }
+  }
+};
+
+/* generateLineup: public entry. Returns a result object that combines the new
+   plan-shape fields (starters, arrangement, libero, score, perRotationScores,
+   validation) with a back-compat layer for the existing UI (mode, starting6,
+   rotations, rotationScores, bench, benchPool, servingOrder,
+   algorithmStarting6, modified). Block 3 drops the back-compat layer. */
+function generateLineup(state) {
+  state = state || S;
+  _fitCache = new Map();
+
+  const settings = state.settings || defaultSettings();
+  const system = settings.system === '6-2' ? '6-2' : '5-1';
+  // Map the legacy strict/loose toggle to the new mode space until Block 3
+  // adds the proper optimization-mode dropdown.
+  const mode = state.optimizationMode
+    || (state.mode === 'loose' ? 'best6' : 'balanced');
+  const ruleset = RULESETS[settings.ruleset] || RULESETS.rec;
+
+  const roster = state.players.filter(p => p.available && (p.name || '').trim());
+  if (roster.length < 7) {
+    return { error: `Need at least 7 available players (you have ${roster.length}).`, starters: null, validation: 'roster-size' };
+  }
+
+  const { starters, validation } = chooseStarters(roster, system, mode, settings);
+  if (!starters) {
+    return { error: validation, starters: null, validation };
+  }
+
+  const liberoPlayer = starters.L[0] || null;
+  const libero = liberoPlayer ? {
+    player: liberoPlayer,
+    replaces: ['MB'],
+    servesInRotation: null
+  } : null;
+
+  const arrangements = arrangeRotation(starters, system);
+  if (arrangements.length === 0) {
+    return { error: `No legal arrangement for ${system}`, starters: null, validation: 'arrangement-empty' };
+  }
+  const patterns = state.subPatterns || [];
+
+  let best = null;
+  for (const arr of arrangements) {
+    const { score, perRotationScores } = scoreLineup(arr, mode, libero, patterns, ruleset, settings);
     if (!best || score > best.score) {
-      best = { perm: perm.slice(), score, rotScores };
+      best = { arrangement: arr, score, perRotationScores };
     }
-  });
-  return best;
-}
-
-/* Loose: pure 6-position assignment problem — best player in each spot. */
-function optimizeLooseArrangement(six) {
-  let best = null;
-  permute(six, perm => {
-    let total = 0;
-    for (let pos = 1; pos <= 6; pos++) {
-      total += playerScoreAtPosition(perm[pos - 1], pos);
-    }
-    if (!best || total > best.score) {
-      best = { perm: perm.slice(), score: total };
-    }
-  });
-  return best;
-}
-
-function generateLineup() {
-  const available = S.players.filter(p => p.available && (p.name || '').trim());
-  if (available.length < 6) {
-    return { error: `Need at least 6 available players (you have ${available.length}).` };
-  }
-  const six = pickBestSix(available);
-
-  let result;
-  if (S.mode === 'loose') {
-    const out = optimizeLooseArrangement(six);
-    const rotation = {};
-    for (let i = 0; i < 6; i++) rotation[i + 1] = out.perm[i];
-    result = {
-      mode: 'loose',
-      starting6: out.perm,
-      rotations: [rotation],
-      rotationScores: [out.score]
-    };
-  } else {
-    const out = optimizeStrictArrangement(six);
-    const rotations = [];
-    for (let r = 0; r < 6; r++) {
-      const rot = {};
-      for (let startPos = 1; startPos <= 6; startPos++) {
-        const player = out.perm[startPos - 1];
-        const currentPos = ((startPos - 1 - r + 6) % 6) + 1;
-        rot[currentPos] = player;
-      }
-      rotations.push(rot);
-    }
-    result = {
-      mode: 'strict',
-      starting6: out.perm,
-      rotations,
-      rotationScores: out.rotScores
-    };
   }
 
-  // Snapshot the algorithm's pick so user can reset back to it after manual edits
-  result.algorithmStarting6 = result.starting6.slice();
-  result.benchPool = available.slice();   // all available players, used to manage swaps
-  result.modified = false;
+  // --- Back-compat translation for the existing UI ---
+  const startOrder = best.arrangement.startOrder;
+  const starting6 = startOrder.slice();
+  const rotations = best.arrangement.rotations.map(rot => ({
+    1: rot.backRow[2],
+    2: rot.frontRow[2],
+    3: rot.frontRow[1],
+    4: rot.frontRow[0],
+    5: rot.backRow[0],
+    6: rot.backRow[1]
+  }));
 
-  rebuildDerivedFields(result);
+  const result = {
+    // New shape
+    starters,
+    arrangement: best.arrangement,
+    libero,
+    score: best.score,
+    perRotationScores: best.perRotationScores,
+    validation: null,
+    // Back-compat
+    mode: 'strict',
+    starting6,
+    rotations,
+    rotationScores: best.perRotationScores,
+    benchPool: roster.slice(),
+    algorithmStarting6: starting6.slice(),
+    modified: false
+  };
+  rebuildBenchAndServingOrder(result);
   return result;
 }
 
-/* Re-derives rotations, rotationScores, bench, and servingOrder from
-   result.starting6 + result.benchPool. Called after any manual swap. */
-function rebuildDerivedFields(result) {
-  if (result.mode === 'strict') {
-    const rotations = [];
-    const rotScores = [];
-    for (let r = 0; r < 6; r++) {
-      const rot = {};
-      let total = 0;
-      for (let startPos = 1; startPos <= 6; startPos++) {
-        const player = result.starting6[startPos - 1];
-        const currentPos = ((startPos - 1 - r + 6) % 6) + 1;
-        rot[currentPos] = player;
-        total += playerScoreAtPosition(player, currentPos);
-      }
-      rotations.push(rot);
-      rotScores.push(total);
-    }
-    result.rotations = rotations;
-    result.rotationScores = rotScores;
-    const order = [];
-    for (let r = 0; r < 6; r++) order.push(result.rotations[r][1]);
-    result.servingOrder = order;
-  } else {
-    const rotation = {};
-    let total = 0;
-    for (let i = 0; i < 6; i++) {
-      rotation[i + 1] = result.starting6[i];
-      total += playerScoreAtPosition(result.starting6[i], i + 1);
-    }
-    result.rotations = [rotation];
-    result.rotationScores = [total];
-    result.servingOrder = [...result.starting6].sort(
-      (a, b) => (b.skills.serving || 0) - (a.skills.serving || 0)
-    );
-  }
-
+function rebuildBenchAndServingOrder(result) {
+  const settings = (S && S.settings) || defaultSettings();
   const startingIds = new Set(result.starting6.map(p => p.id));
   result.bench = result.benchPool
     .filter(p => !startingIds.has(p.id))
-    .map(p => ({ player: p, value: playerAvgValue(p), skill: playerSkillRaw(p) }))
+    .map(p => {
+      const role = (p.positions && p.positions[0]) || 'OH';
+      return { player: p, value: playerFitForRole(p, role, settings), skill: playerSkillRaw(p) };
+    })
     .sort((a, b) => b.value - a.value);
+  result.servingOrder = result.starting6.slice();
 }
+
+/* rebuildDerivedFields: kept for the existing swap/sub UI. Re-derives
+   rotations + scores from result.starting6 (treated as zone-1..6 starting
+   order) using the new role-aware scoring. */
+function rebuildDerivedFields(result) {
+  if (!result || !result.starting6) return;
+  const settings = (S && S.settings) || defaultSettings();
+  const rotations = [];
+  const rotationScores = [];
+  for (let r = 0; r < 6; r++) {
+    const at = z => result.starting6[((z - 1 + r) % 6 + 6) % 6];
+    const rot = { 1: at(1), 2: at(2), 3: at(3), 4: at(4), 5: at(5), 6: at(6) };
+    rotations.push(rot);
+    let total = 0;
+    for (let pos = 1; pos <= 6; pos++) {
+      const p = rot[pos];
+      const role = (p && p.positions && p.positions[0]) || 'OH';
+      total += playerFitForRole(p, role, settings);
+    }
+    rotationScores.push(total);
+  }
+  result.rotations = rotations;
+  result.rotationScores = rotationScores;
+  rebuildBenchAndServingOrder(result);
+}
+
+// Expose pure functions for Block 6 page.evaluate tests.
+if (typeof window !== 'undefined') {
+  window.generateLineup = generateLineup;
+  window.chooseStarters = chooseStarters;
+  window.arrangeRotation = arrangeRotation;
+  window.scoreRotation = scoreRotation;
+  window.scoreLineup = scoreLineup;
+  window.applySubPatterns = applySubPatterns;
+  window.playerFitForRole = playerFitForRole;
+  window.validRolesForPlayer = validRolesForPlayer;
+  window.SUB_PATTERN_TEMPLATES = SUB_PATTERN_TEMPLATES;
+  window.SYSTEM_REQUIREMENTS = SYSTEM_REQUIREMENTS;
+}
+
+/* ===== Dev-only roster loader =====
+   Block 4 will replace this with a proper "Load Demo Roster" button + a
+   richer demo. For now: call window.loadDevRoster() from the DevTools
+   console to populate a 13-player roster covering both 5-1 and 6-2 needs. */
+const _DEV_ROSTER = [
+  ['Player 1',  ['OH', 'DS'],  [6, 7, 6, 7, 4, 3]],
+  ['Player 2',  ['OH', null],  [7, 7, 6, 8, 5, 3]],
+  ['Player 3',  ['MB', null],  [5, 3, 5, 7, 9, 2]],
+  ['Player 4',  ['MB', 'OPP'], [6, 3, 5, 8, 8, 2]],
+  ['Player 5',  ['S',  null],  [7, 5, 7, 4, 4, 9]],
+  ['Player 6',  ['OPP', 'OH'], [8, 5, 6, 9, 7, 3]],
+  ['Player 7',  ['L',  null],  [4, 9, 9, 1, 1, 3]],
+  ['Player 8',  ['DS', 'OH'],  [6, 8, 8, 5, 2, 3]],
+  ['Player 9',  ['OH', 'DS'],  [5, 6, 6, 6, 4, 3]],
+  ['Player 10', ['MB', null],  [5, 3, 4, 6, 7, 2]],
+  ['Player 11', ['S',  'DS'],  [6, 6, 7, 3, 3, 7]],
+  ['Player 12', ['OPP','MB'],  [7, 4, 5, 7, 6, 2]],
+  ['Player 13', ['DS', 'L'],   [5, 8, 7, 3, 1, 3]]
+];
+function loadDevRoster() {
+  S.players = _DEV_ROSTER.map(([name, positions, sk]) => ({
+    ...createPlayer(name, positions),
+    skills: { serving: sk[0], serveReceive: sk[1], defense: sk[2], hitting: sk[3], blocking: sk[4], setting: sk[5] }
+  }));
+  if (typeof save === 'function') save();
+  if (typeof renderRoster === 'function') renderRoster();
+  console.log(`Loaded ${S.players.length} dev roster players. Switch to Lineup tab and click Generate.`);
+}
+if (typeof window !== 'undefined') window.loadDevRoster = loadDevRoster;
 
 /* ===== Swap / Sub-In Logic ===== */
 function arraysSamePlayers(a, b) {
