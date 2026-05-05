@@ -23,37 +23,52 @@
    ============================================================= */
 
 /* ===== Constants ===== */
-const SKILLS = ['setting', 'passing', 'serving', 'spiking', 'defense', 'attitude', 'communication'];
-const SKILL_LABELS = {
-  setting: 'Setting',
-  passing: 'Passing',
-  serving: 'Serving',
-  spiking: 'Spiking',
-  defense: 'Defense',
-  attitude: 'Attitude',
-  communication: 'Comm.'
-};
-const SKILL_LABELS_SHORT = {
-  setting: 'Set',
-  passing: 'Pass',
-  serving: 'Serve',
-  spiking: 'Spike',
-  defense: 'Defense',
-  attitude: 'Attitude',
-  communication: 'Comm.'
+const ROLES = ['OH', 'MB', 'S', 'OPP', 'L', 'DS'];
+const ROLE_LABELS = {
+  OH: 'Outside Hitter',
+  MB: 'Middle Blocker',
+  S: 'Setter',
+  OPP: 'Opposite',
+  L: 'Libero',
+  DS: 'Defensive Specialist'
 };
 
-// Position multipliers — how much each skill matters at each court position.
-// Position 1 = right back (server), 2 = right front (sets), 3 = mid front,
-// 4 = left front, 5 = left back, 6 = mid back.
-const POS_MULT = {
-  1: { setting: 0.5, passing: 1.3, serving: 1.6, spiking: 0.7, defense: 1.2, attitude: 1.0, communication: 1.0 },
-  2: { setting: 1.8, passing: 0.7, serving: 1.0, spiking: 1.0, defense: 0.8, attitude: 1.0, communication: 1.3 },
-  3: { setting: 0.5, passing: 0.7, serving: 1.0, spiking: 1.5, defense: 1.0, attitude: 1.0, communication: 1.1 },
-  4: { setting: 0.5, passing: 0.7, serving: 1.0, spiking: 1.5, defense: 1.0, attitude: 1.0, communication: 1.0 },
-  5: { setting: 0.5, passing: 1.3, serving: 1.0, spiking: 0.7, defense: 1.3, attitude: 1.0, communication: 1.0 },
-  6: { setting: 0.5, passing: 1.3, serving: 1.0, spiking: 0.7, defense: 1.3, attitude: 1.0, communication: 1.1 }
+const SKILLS = ['serving', 'serveReceive', 'defense', 'hitting', 'blocking', 'setting'];
+const SKILL_LABELS = {
+  serving: 'Serving',
+  serveReceive: 'Serve Receive',
+  defense: 'Defense',
+  hitting: 'Hitting',
+  blocking: 'Blocking',
+  setting: 'Setting'
 };
+const SKILL_LABELS_SHORT = {
+  serving: 'Serve',
+  serveReceive: 'Recv',
+  defense: 'Def',
+  hitting: 'Hit',
+  blocking: 'Block',
+  setting: 'Set'
+};
+const SETTER_TEMPO_KEY = 'setterTempo'; // toggleable 7th skill, S-only
+
+const RULESETS = {
+  rec:  { label: 'Rec League',     subsPerSet: 12, liberoMayServe: false, reentry: 'sameSlot', timeoutsPerSet: 2 },
+  ncaa: { label: "NCAA Women's",   subsPerSet: 15, liberoMayServe: true,  reentry: 'sameSlot', timeoutsPerSet: 2 }
+};
+
+// Per-role skill weights (higher = more important for that role).
+// Used by Block 2's algorithm; declared here so the data model and
+// algorithm share a single source of truth.
+const ROLE_SKILL_WEIGHTS = {
+  OH:  { serving: 1.5, serveReceive: 2.5, defense: 1.5, hitting: 3.0, blocking: 1.0, setting: 0.5 },
+  MB:  { serving: 1.0, serveReceive: 0.5, defense: 1.0, hitting: 2.5, blocking: 4.0, setting: 0.5, bonusBackRow: 'serveReceive' },
+  S:   { serving: 1.5, serveReceive: 0.5, defense: 2.0, hitting: 0.5, blocking: 0.5, setting: 5.0 },
+  OPP: { serving: 2.0, serveReceive: 0.5, defense: 1.5, hitting: 3.5, blocking: 2.0, setting: 0.5 },
+  L:   { serving: 1.0, serveReceive: 5.0, defense: 4.0, hitting: 0.0, blocking: 0.0, setting: 0.0 },
+  DS:  { serving: 1.5, serveReceive: 4.5, defense: 4.0, hitting: 0.0, blocking: 0.0, setting: 0.0 }
+};
+// Setter tempo is added at full weight (5.0) for S-role lineup scoring when settings.showSetterTempo is on.
 
 const POSITION_NAMES = {
   1: 'Server',
@@ -82,10 +97,24 @@ const LEGACY_KEY = 'court_iq_v1'; // youth-rec collision; one-time migrate
 /* ===== State ===== */
 const TEAM_NAME = 'College';   // TODO: replace with friend's actual college team name
 
+function defaultSettings() {
+  return { ruleset: 'rec', system: '5-1', showJersey: false, showSetterTempo: false };
+}
+
+function defaultWeights() {
+  // Equal-weight default; coach can tune in the Weights tab.
+  // Block 2's optimizer multiplies these by ROLE_SKILL_WEIGHTS — coach weights
+  // act as a global "this skill matters more on our team" knob.
+  const w = {};
+  SKILLS.forEach(s => w[s] = 5);
+  return w;
+}
+
 let S = {
   teamName: TEAM_NAME,
   players: [],
-  weights: { setting: 5, passing: 8, serving: 8, spiking: 6, defense: 7, attitude: 5, communication: 5 },
+  weights: defaultWeights(),
+  settings: defaultSettings(),
   mode: 'strict',
   result: null,
   currentRotation: 0,
@@ -108,8 +137,51 @@ function defaultSkills() {
   return o;
 }
 
-function newPlayer(name = '') {
-  return { id: genId(), name, skills: defaultSkills(), available: true };
+function createPlayer(name = '', positions = ['OH', null]) {
+  return {
+    id: genId(),
+    name,
+    jersey: '',                 // string; blank when toggle is off
+    height: '',                 // freeform e.g. "6-1" or "185cm"
+    hand: 'R',                  // 'R' | 'L'
+    positions,                  // [primary, secondary|null], values from ROLES
+    skills: defaultSkills(),
+    setterTempo: 5,             // only surfaced when settings.showSetterTempo and primary === 'S'
+    available: true
+  };
+}
+
+// One-time migration of pre-college (youth-rec) player records.
+// Old shape: skills.passing, skills.spiking, skills.attitude, skills.communication; no positions.
+// New shape: skills.serveReceive + skills.defense + skills.hitting + skills.blocking; positions[].
+function migratePlayer(p) {
+  if (!p || typeof p !== 'object') return p;
+  const isLegacy = p.skills && (
+    'passing' in p.skills || 'spiking' in p.skills ||
+    'attitude' in p.skills || 'communication' in p.skills
+  ) && !Array.isArray(p.positions);
+  if (!isLegacy) return p;
+
+  const old = p.skills || {};
+  const passing = (old.passing | 0) || 5;
+  const newSkills = {
+    serving:      (old.serving | 0) || 5,
+    serveReceive: passing,                     // best-guess split: passing -> both
+    defense:      (old.defense | 0) || passing,
+    hitting:      (old.spiking | 0) || 5,
+    blocking:     5,                           // no analog in old data
+    setting:      (old.setting | 0) || 5
+  };
+  // attitude / communication: no analog, drop.
+  return {
+    ...p,
+    skills: newSkills,
+    jersey: p.jersey || '',
+    height: p.height || '',
+    hand: p.hand || 'R',
+    positions: Array.isArray(p.positions) ? p.positions : ['OH', null],
+    setterTempo: typeof p.setterTempo === 'number' ? p.setterTempo : 5
+  };
 }
 
 function el(tag, opts = {}, children = []) {
@@ -148,9 +220,18 @@ function save(opts = {}) {
   const payload = {
     teamName: S.teamName,
     players: S.players.map(p => ({
-      id: p.id, name: p.name, skills: p.skills, available: p.available
+      id: p.id,
+      name: p.name,
+      jersey: p.jersey || '',
+      height: p.height || '',
+      hand: p.hand || 'R',
+      positions: p.positions || ['OH', null],
+      skills: p.skills,
+      setterTempo: typeof p.setterTempo === 'number' ? p.setterTempo : 5,
+      available: p.available
     })),
     weights: S.weights,
+    settings: S.settings,
     mode: S.mode,
     lastEdited: S.lastEdited,
     rosterSort: S.rosterSort,
@@ -201,15 +282,38 @@ function applyLoadedState(data) {
   // Team name is fixed for this season — keep TEAM_NAME regardless of incoming data
   S.teamName = TEAM_NAME;
   if (Array.isArray(data.players)) {
-    S.players = data.players.map(p => ({
-      id: p.id || genId(),
-      name: p.name || '',
-      skills: { ...defaultSkills(), ...(p.skills || {}) },
-      available: p.available !== false
-    }));
+    S.players = data.players.map(raw => {
+      // First migrate any youth-rec / v1 records to the college shape, then
+      // normalize against the new shape's defaults.
+      const migrated = migratePlayer(raw);
+      return {
+        id: migrated.id || genId(),
+        name: migrated.name || '',
+        jersey: migrated.jersey || '',
+        height: migrated.height || '',
+        hand: migrated.hand === 'L' ? 'L' : 'R',
+        positions: Array.isArray(migrated.positions) && migrated.positions.length
+          ? [migrated.positions[0] || 'OH', migrated.positions[1] || null]
+          : ['OH', null],
+        skills: { ...defaultSkills(), ...(migrated.skills || {}) },
+        setterTempo: typeof migrated.setterTempo === 'number' ? migrated.setterTempo : 5,
+        available: migrated.available !== false
+      };
+    });
   }
   if (data.weights) {
-    S.weights = { ...S.weights, ...data.weights };
+    // Discard stale skill keys (passing/spiking/attitude/communication) — keep only current SKILLS.
+    const w = defaultWeights();
+    SKILLS.forEach(k => { if (typeof data.weights[k] === 'number') w[k] = data.weights[k]; });
+    S.weights = w;
+  }
+  if (data.settings && typeof data.settings === 'object') {
+    S.settings = {
+      ...defaultSettings(),
+      ...data.settings,
+      ruleset: RULESETS[data.settings.ruleset] ? data.settings.ruleset : 'rec',
+      system: (data.settings.system === '6-2' ? '6-2' : '5-1')
+    };
   }
   if (data.mode === 'loose' || data.mode === 'strict') {
     S.mode = data.mode;
@@ -235,16 +339,25 @@ function sortByMode(items, mode, getName, getAvg) {
   }
 }
 
-/* ===== URL encoding (compact base64url JSON) ===== */
+/* ===== URL encoding (compact base64url JSON) =====
+   Block 4 will replace this with a versioned (v:2) format. For Block 1 we
+   extend the existing payload with optional fields so refresh-via-URL
+   round-trips the new player shape without data loss. */
 function encodeStateForUrl() {
   const compact = {
     t: S.teamName || undefined,
     p: S.players.map(p => ({
       n: p.name || '',
       s: SKILLS.map(k => p.skills[k] | 0),
-      a: p.available ? 1 : 0
+      a: p.available ? 1 : 0,
+      pos: p.positions || ['OH', null],
+      h: p.hand === 'L' ? 'L' : 'R',
+      ht: p.height || '',
+      j: p.jersey || '',
+      st: typeof p.setterTempo === 'number' ? p.setterTempo : 5
     })),
     w: SKILLS.map(k => S.weights[k] | 0),
+    cfg: S.settings,
     m: S.mode === 'loose' ? 0 : 1,
     e: S.lastEdited || undefined
   };
@@ -264,15 +377,23 @@ function readStateFromUrl() {
         return {
           id: genId(),
           name: p.n || '',
+          jersey: p.j || '',
+          height: p.ht || '',
+          hand: p.h === 'L' ? 'L' : 'R',
+          positions: Array.isArray(p.pos) && p.pos.length
+            ? [p.pos[0] || 'OH', p.pos[1] || null]
+            : ['OH', null],
           skills,
+          setterTempo: typeof p.st === 'number' ? p.st : 5,
           available: p.a !== 0
         };
       }),
       weights: (() => {
-        const w = {};
-        SKILLS.forEach((k, i) => w[k] = (c.w && c.w[i]) || 5);
+        const w = defaultWeights();
+        SKILLS.forEach((k, i) => { if (c.w && typeof c.w[i] === 'number') w[k] = c.w[i]; });
         return w;
       })(),
+      settings: (c.cfg && typeof c.cfg === 'object') ? c.cfg : null,
       mode: c.m === 0 ? 'loose' : 'strict',
       lastEdited: typeof c.e === 'number' ? c.e : null
     };
@@ -309,16 +430,16 @@ const HELP = {
   'skills-key': {
     title: 'Skills explained',
     body: [
-      { p: 'Each player has 7 skills, rated 1–10. Use these definitions to keep ratings consistent across your roster:' },
+      { p: 'Each player has 6 skills, rated 1–10. Use these definitions to keep ratings consistent across your roster:' },
       { dl: [
-        ['Setting', 'Running offense as the setter — placing the second touch for a hitter.'],
-        ['Passing', 'Receiving serves and free balls accurately to the setter.'],
         ['Serving', 'Power, accuracy, and consistency of their serve.'],
-        ['Spiking', 'Attacking strength at the net — spike technique and shot selection.'],
-        ['Defense', 'Digging hard-driven balls and reading the opponent’s attack.'],
-        ['Attitude', 'Hustle, resilience, sportsmanship, handling pressure.'],
-        ['Communication', 'Calling balls, talking on court, leading teammates.']
+        ['Serve Receive', 'Passing a live serve cleanly to the setter.'],
+        ['Defense', 'Digging hard-driven balls, reading the opponent’s attack.'],
+        ['Hitting', 'Attacking strength at the net — kill efficiency and shot selection.'],
+        ['Blocking', 'Reading the setter, timing, and getting hands over the net.'],
+        ['Setting', 'Running offense as the setter — placing the second touch for a hitter.']
       ] },
+      { callout: 'Setters can also be rated on tempo (toggle in the topbar) — how well they run quick / slide / back sets.' },
       { callout: 'Tip: rate honestly relative to your team. A 7 means "above average for our group," not "above average in the league."' }
     ]
   },
@@ -343,7 +464,7 @@ const HELP = {
     body: [
       { p: 'Each bar represents one of the 6 rotations during the set. The height is the total skill on the court for that rotation — taller bars are stronger rotations.' },
       { dl: [
-        ['Pink bars', 'Strong rotations.'],
+        ['Green bars', 'Strong rotations.'],
         ['Yellow bars', 'Weakest rotations — your team is most vulnerable here. Keep an eye on these in the game.'],
         ['Active bar', 'The rotation currently shown on the court (filled darker).']
       ] },
@@ -356,7 +477,7 @@ const HELP = {
       { p: 'A few visual cues on the court diagram:' },
       { dl: [
         ['Yellow ring', 'The server for this rotation (position 1).'],
-        ['Pink-tint background', 'The setter for this rotation (position 2). Whoever rotates here sets.'],
+        ['Green-tint background', 'The setter for this rotation (position 2). Whoever rotates here sets.'],
         ['Position numbers', '4-3-2 is the front row (left to right). 5-6-1 is the back row.']
       ] },
       { p: 'Tap any player to see their fit at every position. Drag a player onto another to swap them. Drag onto the bench drop zone to sub them off.' }
@@ -508,11 +629,16 @@ async function copyShareUrl() {
   }
 }
 
-/* ===== Algorithm ===== */
+/* ===== Algorithm =====
+   NOTE: this entire block (down through optimizeLooseArrangement) is the
+   inherited youth-rec optimizer and is scheduled for full deletion in
+   Block 2. The new SKILLS keys don't match the old POS_MULT table, so
+   the optimizer here produces a degenerate (avg-skill * coach-weight)
+   lineup until Block 2 lands. */
 function playerScoreAtPosition(player, pos) {
   let score = 0;
   for (const s of SKILLS) {
-    score += (player.skills[s] || 0) * (S.weights[s] || 0) * (POS_MULT[pos][s] || 1);
+    score += (player.skills[s] || 0) * (S.weights[s] || 0);
   }
   return score;
 }
@@ -1108,12 +1234,16 @@ function buildPlayerCard(p) {
     card.classList.toggle('expanded', p._expanded);
   });
 
-  // Skills section
+  // Roster fields (jersey, height, positions, hand) + skills + actions
   const skillBox = el('div', { cls: 'player-skills' });
+  skillBox.appendChild(buildRosterFields(p));
   skillBox.appendChild(buildSkillGrid(p.skills, () => {
     overallNum.textContent = avgSkillDisplay(p);
     save();
   }));
+  // Setter tempo: only when settings.showSetterTempo and primary === 'S'
+  const tempoRow = buildSetterTempoRow(p);
+  if (tempoRow) skillBox.appendChild(tempoRow);
   const delBtn = el('button', {
     cls: 'btn-delete-player',
     text: '🗑 Delete player',
@@ -1124,6 +1254,120 @@ function buildPlayerCard(p) {
   card.appendChild(head);
   card.appendChild(skillBox);
   return card;
+}
+
+function buildRosterFields(p) {
+  const wrap = el('div', { cls: 'roster-fields' });
+
+  // Jersey #
+  const jerseyRow = el('div', { cls: 'roster-field roster-field-jersey' });
+  jerseyRow.appendChild(el('label', { text: 'Jersey #' }));
+  const jerseyInput = el('input', {
+    attrs: { type: 'text', maxlength: '3', inputmode: 'numeric', pattern: '[0-9]*', placeholder: '#' }
+  });
+  jerseyInput.value = p.jersey || '';
+  jerseyInput.addEventListener('input', e => { p.jersey = e.target.value.replace(/[^0-9]/g, '').slice(0, 3); e.target.value = p.jersey; save(); });
+  jerseyInput.addEventListener('click', e => e.stopPropagation());
+  jerseyRow.appendChild(jerseyInput);
+  if (!S.settings?.showJersey) jerseyRow.hidden = true;
+  wrap.appendChild(jerseyRow);
+
+  // Height
+  const heightRow = el('div', { cls: 'roster-field' });
+  heightRow.appendChild(el('label', { text: 'Height' }));
+  const heightInput = el('input', {
+    attrs: { type: 'text', maxlength: '8', placeholder: 'e.g. 6-1' }
+  });
+  heightInput.value = p.height || '';
+  heightInput.addEventListener('input', e => { p.height = e.target.value; save(); });
+  heightInput.addEventListener('click', e => e.stopPropagation());
+  heightRow.appendChild(heightInput);
+  wrap.appendChild(heightRow);
+
+  // Primary position
+  const priRow = el('div', { cls: 'roster-field' });
+  priRow.appendChild(el('label', { text: 'Primary' }));
+  const priSel = el('select');
+  ROLES.forEach(r => {
+    const o = document.createElement('option');
+    o.value = r; o.textContent = `${r} — ${ROLE_LABELS[r]}`;
+    priSel.appendChild(o);
+  });
+  priSel.value = p.positions?.[0] || 'OH';
+  priSel.addEventListener('change', e => {
+    p.positions = [e.target.value, p.positions?.[1] || null];
+    save();
+    // Re-render the card so the setter-tempo row appears/disappears.
+    renderRoster();
+  });
+  priSel.addEventListener('click', e => e.stopPropagation());
+  priRow.appendChild(priSel);
+  wrap.appendChild(priRow);
+
+  // Secondary position
+  const secRow = el('div', { cls: 'roster-field' });
+  secRow.appendChild(el('label', { text: 'Secondary' }));
+  const secSel = el('select');
+  const noneOpt = document.createElement('option');
+  noneOpt.value = ''; noneOpt.textContent = '— none —';
+  secSel.appendChild(noneOpt);
+  ROLES.forEach(r => {
+    const o = document.createElement('option');
+    o.value = r; o.textContent = `${r} — ${ROLE_LABELS[r]}`;
+    secSel.appendChild(o);
+  });
+  secSel.value = p.positions?.[1] || '';
+  secSel.addEventListener('change', e => {
+    p.positions = [p.positions?.[0] || 'OH', e.target.value || null];
+    save();
+  });
+  secSel.addEventListener('click', e => e.stopPropagation());
+  secRow.appendChild(secSel);
+  wrap.appendChild(secRow);
+
+  // Dominant hand
+  const handRow = el('div', { cls: 'roster-field' });
+  handRow.appendChild(el('label', { text: 'Hand' }));
+  const handSel = el('select');
+  [['R', 'Right'], ['L', 'Left']].forEach(([v, label]) => {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = label;
+    handSel.appendChild(o);
+  });
+  handSel.value = p.hand === 'L' ? 'L' : 'R';
+  handSel.addEventListener('change', e => { p.hand = e.target.value === 'L' ? 'L' : 'R'; save(); });
+  handSel.addEventListener('click', e => e.stopPropagation());
+  handRow.appendChild(handSel);
+  wrap.appendChild(handRow);
+
+  return wrap;
+}
+
+function buildSetterTempoRow(p) {
+  if (!S.settings?.showSetterTempo) return null;
+  if ((p.positions?.[0] || 'OH') !== 'S') return null;
+  const row = el('div', { cls: 'roster-field roster-field-tempo' });
+  row.appendChild(el('label', { text: 'Setter tempo' }));
+  const input = el('input', {
+    attrs: { type: 'number', min: '1', max: '10', step: '1', inputmode: 'numeric' }
+  });
+  input.value = String(p.setterTempo ?? 5);
+  input.addEventListener('input', e => {
+    let v = parseInt(e.target.value, 10);
+    if (!isNaN(v)) { v = Math.max(1, Math.min(10, v)); p.setterTempo = v; save(); }
+  });
+  input.addEventListener('blur', e => {
+    let v = parseInt(e.target.value, 10);
+    if (isNaN(v)) v = p.setterTempo ?? 5;
+    v = Math.max(1, Math.min(10, v));
+    p.setterTempo = v;
+    e.target.value = String(v);
+    save();
+  });
+  input.addEventListener('focus', e => e.target.select());
+  input.addEventListener('click', e => e.stopPropagation());
+  row.appendChild(input);
+  return row;
 }
 
 function avgSkillDisplay(p) {
@@ -1420,7 +1664,7 @@ function init() {
   });
 
   $('#addPlayerBtn').addEventListener('click', () => {
-    const np = newPlayer('');
+    const np = createPlayer('');
     // Stay collapsed — keeps the Add Player button close for rapid roster entry.
     // User can tap the card later to expand and edit skills.
     S.players.push(np);
@@ -1447,10 +1691,46 @@ function init() {
     });
   });
 
+  // Topbar settings: ruleset / system / jersey toggle / setter-tempo toggle
+  const rulesetSel = $('#rulesetSelect');
+  const systemSel = $('#systemSelect');
+  const jerseyTog = $('#jerseyToggle');
+  const tempoTog = $('#setterTempoToggle');
+  if (rulesetSel) {
+    rulesetSel.value = S.settings.ruleset;
+    rulesetSel.addEventListener('change', e => {
+      S.settings.ruleset = RULESETS[e.target.value] ? e.target.value : 'rec';
+      save();
+    });
+  }
+  if (systemSel) {
+    systemSel.value = S.settings.system;
+    systemSel.addEventListener('change', e => {
+      S.settings.system = e.target.value === '6-2' ? '6-2' : '5-1';
+      save();
+    });
+  }
+  if (jerseyTog) {
+    jerseyTog.checked = !!S.settings.showJersey;
+    jerseyTog.addEventListener('change', e => {
+      S.settings.showJersey = !!e.target.checked;
+      save();
+      renderRoster();
+    });
+  }
+  if (tempoTog) {
+    tempoTog.checked = !!S.settings.showSetterTempo;
+    tempoTog.addEventListener('change', e => {
+      S.settings.showSetterTempo = !!e.target.checked;
+      save();
+      renderRoster();
+    });
+  }
+
   $('#resetWeightsBtn').addEventListener('click', async () => {
     const ok = await confirmDialog('Reset weights?', 'Restore all skill weights to defaults?');
     if (!ok) return;
-    S.weights = { setting: 5, passing: 8, serving: 8, spiking: 6, defense: 7, attitude: 5, communication: 5 };
+    S.weights = defaultWeights();
     save();
     renderWeights();
     toast('Weights reset.');

@@ -11,13 +11,31 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand-row">
-      <span class="ball">🏐</span>
-      <h1 class="brand">Court IQ — Marshall Thundering Herd</h1>
+    <div class="topbar-row">
+      <div class="brand-row">
+        <span class="ball">🏐</span>
+        <h1 class="brand">Court IQ — Marshall Thundering Herd</h1>
+      </div>
+      <button class="icon-btn" id="shareBtn" title="Copy share link" aria-label="Share">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+      </button>
     </div>
-    <button class="icon-btn" id="shareBtn" title="Copy share link" aria-label="Share">
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-    </button>
+    <div class="topbar-settings">
+      <label class="settings-field"><span>Ruleset</span>
+        <select id="rulesetSelect">
+          <option value="rec">Rec League</option>
+          <option value="ncaa">NCAA Women's</option>
+        </select>
+      </label>
+      <label class="settings-field"><span>System</span>
+        <select id="systemSelect">
+          <option value="5-1">5-1</option>
+          <option value="6-2">6-2</option>
+        </select>
+      </label>
+      <label class="settings-toggle"><input type="checkbox" id="jerseyToggle"> Jersey #</label>
+      <label class="settings-toggle"><input type="checkbox" id="setterTempoToggle"> Setter tempo</label>
+    </div>
   </header>
 
   <div class="status-bar" id="statusBar" hidden>
