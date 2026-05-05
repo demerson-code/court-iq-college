@@ -1,10 +1,10 @@
 /* ===== Court IQ — Volleyball Rotation Tool ===== */
 
 :root {
-  --green: #00B140;        /* Marshall kelly green, Pantone 354 C */
-  --green-dark: #008C33;
-  --green-light: #2CC960;
-  --green-soft: #E6F7EC;
+  --green: #009639;        /* deeper Marshall green — easier on the eye than 354 C neat */
+  --green-dark: #006E2A;
+  --green-light: #2DB055;
+  --green-soft: #DDEFE3;
   --court-navy: #0F1A2E;   /* keep court contrast */
   --court-deep: #060B17;
   --court-line: #FFFFFF;
@@ -138,14 +138,14 @@ p { margin: 0; }
 
 /* ===== Status bar (last edited) ===== */
 .status-bar {
-  background: var(--green-soft);
-  color: var(--green-dark);
+  background: var(--card);
+  color: var(--green-light);
   font-size: 11px;
   font-weight: 700;
   padding: 4px 16px;
   text-align: center;
   letter-spacing: 0.3px;
-  border-bottom: 1px solid var(--green-light);
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -156,10 +156,10 @@ p { margin: 0; }
 /* ===== Tabs ===== */
 .tabs {
   display: flex;
-  background: white;
+  background: var(--card);
   border-bottom: 1px solid var(--border);
   position: sticky;
-  top: 62px;
+  top: 100px;
   z-index: 40;
 }
 .tab {
@@ -179,12 +179,14 @@ p { margin: 0; }
   transition: all 0.15s;
   min-height: var(--tap);
 }
-.tab-icon { font-size: 18px; line-height: 1; }
+.tab-icon { font-size: 18px; line-height: 1; opacity: 0.85; }
 .tab.active {
-  color: var(--green);
+  color: var(--green-light);
   border-bottom-color: var(--green);
+  background: rgba(0, 150, 57, 0.08);
 }
-.tab:hover { background: var(--green-soft); }
+.tab.active .tab-icon { opacity: 1; }
+.tab:hover { background: rgba(0, 150, 57, 0.10); }
 
 /* ===== Tab panels ===== */
 main {
@@ -1502,7 +1504,7 @@ body.dragging-court .bench-drop-zone { display: block; }
 .roster-field-tempo {
   margin-top: 8px;
   padding: 8px 10px;
-  background: rgba(0, 177, 64, 0.08);
+  background: rgba(0, 150, 57, 0.08);
   border-radius: var(--radius-sm);
   border: 1px dashed var(--green);
 }
