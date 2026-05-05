@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#FF4D8B">
+  <meta name="description" content="Court IQ College — college-level volleyball lineup tool. Position-specialized players, 5-1 / 6-2 systems, libero rules.">
+  <title>Court IQ College — Volleyball Lineup Tool</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-row">
+      <span class="ball">🏐</span>
+      <h1 class="brand">Court IQ</h1>
+    </div>
+    <!-- TODO(college rebrand): replace icon + name with the friend's college team identity -->
+    <div class="team-badge" aria-label="Team placeholder">
+      <span class="team-badge-icon" aria-hidden="true">🏐</span>
+      <span class="team-badge-name">COLLEGE</span>
+    </div>
+    <button class="icon-btn" id="shareBtn" title="Copy share link" aria-label="Share">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+    </button>
+  </header>
+
+  <div class="status-bar" id="statusBar" hidden>
+    <span class="status-icon">✏️</span>
+    <span id="lastEditedText">edited just now</span>
+  </div>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="roster" role="tab">
+      <span class="tab-icon">👥</span>
+      <span class="tab-label">Roster</span>
+    </button>
+    <button class="tab" data-tab="weights" role="tab">
+      <span class="tab-icon">⚖️</span>
+      <span class="tab-label">Weights</span>
+    </button>
+    <button class="tab" data-tab="lineup" role="tab">
+      <span class="tab-icon">🏐</span>
+      <span class="tab-label">Lineup</span>
+    </button>
+  </nav>
+
+  <main>
+    <!-- ROSTER TAB -->
+    <section class="tab-panel active" id="rosterTab" role="tabpanel">
+      <div class="section-header">
+        <div>
+          <h2>Players</h2>
+          <p class="hint"><span id="availCount">0</span> available · <span id="totalCount">0</span> total</p>
+        </div>
+        <select class="sort-select" id="rosterSort" aria-label="Sort players">
+          <option value="avg-desc">AVG: high → low</option>
+          <option value="avg-asc">AVG: low → high</option>
+          <option value="name-asc">Name: A → Z</option>
+          <option value="name-desc">Name: Z → A</option>
+        </select>
+      </div>
+      <div class="player-list" id="playerList"></div>
+      <button class="btn btn-add btn-add-player" id="addPlayerBtn">+ Add Player</button>
+      <div class="empty-state" id="rosterEmpty" hidden>
+        <p>No players yet — tap <strong>+ Add Player</strong> below to start your roster.</p>
+      </div>
+    </section>
+
+    <!-- WEIGHTS TAB -->
+    <section class="tab-panel" id="weightsTab" role="tabpanel">
+      <div class="section-header">
+        <div>
+          <h2 class="label-with-help">Skill Weights <button class="help-btn" data-help="skills-key" aria-label="What do these skills mean?" type="button">?</button></h2>
+          <p class="hint">How important is each skill? (1 = not much, 10 = critical)</p>
+        </div>
+        <button class="btn btn-secondary" id="resetWeightsBtn">Reset</button>
+      </div>
+      <div class="weight-list" id="weightList"></div>
+      <div class="mode-card">
+        <h3 class="label-with-help">Lineup Mode <button class="help-btn" data-help="lineup-mode" aria-label="When should I pick which?" type="button">?</button></h3>
+        <label class="radio-row">
+          <input type="radio" name="mode" value="strict" checked>
+          <div>
+            <strong>Strict — Real rotation</strong>
+            <span class="radio-hint">Players cycle through all 6 positions in legal volleyball order. Use for actual games where rotation rules apply.</span>
+          </div>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="mode" value="loose">
+          <div>
+            <strong>Loose — Best per spot</strong>
+            <span class="radio-hint">Each player pinned to their best-fit position. No rotation cycle. Use for practice, scrimmage, or to see where players shine.</span>
+          </div>
+        </label>
+      </div>
+    </section>
+
+    <!-- LINEUP TAB -->
+    <section class="tab-panel" id="lineupTab" role="tabpanel">
+      <div class="run-section">
+        <button class="btn btn-primary btn-run" id="runBtn">
+          <span class="run-icon">⚡</span>
+          Generate Lineup
+        </button>
+        <p class="hint" id="runHint">Mark 6+ players available on the Roster tab, then tap Generate.</p>
+      </div>
+
+      <div id="lineupResult" hidden>
+        <div class="rotation-controls">
+          <button class="rot-btn" id="prevRotBtn" aria-label="Previous rotation">←</button>
+          <div class="rot-display">
+            <div class="rot-label label-with-help">
+              Rotation
+              <button class="help-btn" data-help="court-legend" aria-label="What do the colors mean?" type="button">?</button>
+            </div>
+            <div class="rot-num"><span id="rotNum">1</span> <span class="rot-of">/ 6</span></div>
+            <div class="modified-badge" id="modifiedBadge" hidden>edited</div>
+          </div>
+          <button class="rot-btn" id="nextRotBtn" aria-label="Next rotation">→</button>
+        </div>
+        <div class="reset-row" id="resetRow" hidden>
+          <span class="reset-hint">Lineup manually edited</span>
+          <button class="btn btn-secondary btn-tiny" id="resetOptimalBtn">Reset to optimal</button>
+        </div>
+
+        <div class="court-wrapper">
+          <div class="court" id="court">
+            <div class="net">NET</div>
+            <div class="court-line line-attack-top"></div>
+            <div class="court-line line-attack-bottom"></div>
+            <div class="position-zones">
+              <div class="zone" data-pos="4"><span class="zone-label">4</span></div>
+              <div class="zone" data-pos="3"><span class="zone-label">3</span></div>
+              <div class="zone" data-pos="2"><span class="zone-label">2</span></div>
+              <div class="zone" data-pos="5"><span class="zone-label">5</span></div>
+              <div class="zone" data-pos="6"><span class="zone-label">6</span></div>
+              <div class="zone" data-pos="1"><span class="zone-label">1</span></div>
+            </div>
+            <div class="player-layer" id="playerLayer"></div>
+            <div class="serve-arrow" id="serveArrow" hidden>SERVE</div>
+          </div>
+        </div>
+
+        <div class="rotation-strength">
+          <h3 class="label-with-help">Rotation Strength <button class="help-btn" data-help="rotation-strength" aria-label="What do these bars mean?" type="button">?</button></h3>
+          <div class="strength-bars" id="strengthBars"></div>
+        </div>
+
+        <div class="serving-order-card">
+          <h3>Serving Order</h3>
+          <p class="hint">Tap a player to swap them in/out of serving spots.</p>
+          <ol class="serve-list" id="servingOrder"></ol>
+        </div>
+
+        <div class="bench-card" id="benchCard">
+          <div class="bench-card-head">
+            <h3>Bench</h3>
+            <select class="sort-select" id="benchSort" aria-label="Sort bench">
+              <option value="avg-desc">AVG: high → low</option>
+              <option value="avg-asc">AVG: low → high</option>
+              <option value="name-asc">Name: A → Z</option>
+              <option value="name-desc">Name: Z → A</option>
+            </select>
+          </div>
+          <p class="bench-hint">Drag onto a court player to sub them in.</p>
+          <ul class="bench-list" id="benchList"></ul>
+          <div class="bench-drop-zone" id="benchDropZone">Drop here to send to bench</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Swap mode banner -->
+  <div class="swap-banner" id="swapBanner" hidden>
+    <span class="swap-banner-text" id="swapBannerText">Tap a player to swap</span>
+    <button class="swap-banner-cancel" id="swapBannerCancel">Cancel</button>
+  </div>
+
+  <!-- Player breakdown popup -->
+  <div class="modal" id="breakdownModal" hidden>
+    <div class="modal-content breakdown-content">
+      <button class="breakdown-close" id="breakdownClose" aria-label="Close">×</button>
+      <div class="breakdown-header">
+        <div class="breakdown-avatar" id="breakdownAvatar"></div>
+        <div>
+          <h3 class="breakdown-name" id="breakdownName"></h3>
+          <p class="breakdown-position" id="breakdownPosition"></p>
+        </div>
+      </div>
+      <div class="breakdown-section">
+        <h4>Fit at every position</h4>
+        <p class="breakdown-hint">Higher = better fit. The current spot is highlighted.</p>
+        <div class="breakdown-bars" id="breakdownBars"></div>
+      </div>
+      <div class="breakdown-actions">
+        <button class="btn btn-secondary" id="breakdownSubOff">Sub off →</button>
+        <button class="btn btn-primary" id="breakdownSwap">Swap with…</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Help / Info modal -->
+  <div class="modal" id="helpModal" hidden>
+    <div class="modal-content help-modal-content">
+      <button class="breakdown-close" id="helpClose" aria-label="Close">×</button>
+      <div class="help-icon-wrap" aria-hidden="true">
+        <span class="help-icon-large" id="helpIconLarge">?</span>
+      </div>
+      <h3 class="help-title" id="helpTitle">Help</h3>
+      <div class="help-body" id="helpBody"></div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="helpDoneBtn">Got it</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Share modal -->
+  <div class="modal" id="shareModal" hidden>
+    <div class="modal-content share-modal-content">
+      <button class="breakdown-close" id="shareModalClose" aria-label="Close">×</button>
+      <h3>Share this team</h3>
+      <p class="modal-info" id="shareModalInfo">—</p>
+      <p class="hint">Send this link to your assistant coach. When they edit and share back, open their new link to see their changes.</p>
+      <div class="share-url-row">
+        <input type="text" id="shareUrlInput" readonly aria-label="Share URL">
+        <button class="btn btn-secondary btn-tiny" id="shareCopyBtn">Copy</button>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="shareCloseBtn">Done</button>
+        <button class="btn btn-primary" id="shareNativeBtn" hidden>Share to apps…</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast notification -->
+  <div class="toast" id="toast" hidden></div>
+
+  <!-- Confirm modal -->
+  <div class="modal" id="confirmModal" hidden>
+    <div class="modal-content">
+      <h3 id="confirmTitle">Are you sure?</h3>
+      <p id="confirmMsg"></p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="confirmCancel">Cancel</button>
+        <button class="btn btn-danger" id="confirmOk">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
