@@ -129,17 +129,39 @@ function defaultLineup() {
   };
 }
 
+function defaultScrimmage() {
+  // teamCount:    2 | 3 | 4
+  // attendance:   { playerId: bool } — Tuesday-night attendance checklist;
+  //               defaults to whatever's marked p.available on the roster.
+  // teams:        [[playerId, ...], [playerId, ...], ...] — last-generated split.
+  // lastSpread:   number | null — gap between strongest and weakest team total.
+  // subOverrides: [playerId] — players the coach has manually designated as
+  //               subs (overriding the lowest-skill auto-pick). Reset on each
+  //               Pick teams so a fresh team gets fresh sub designations.
+  return {
+    teamCount: 2,
+    attendance: {},
+    teams: [],
+    lastSpread: null,
+    subOverrides: []
+  };
+}
+
 let S = {
   teamName: TEAM_NAME,
   players: [],
   weights: defaultWeights(),
   settings: defaultSettings(),
   lineup: defaultLineup(),
+  scrimmage: defaultScrimmage(),
   result: null,
   lastEdited: null,
   rosterSort: 'avg-desc',   // 'avg-desc' | 'avg-asc' | 'name-asc' | 'name-desc'
-  benchSort: 'avg-desc'
+  benchSort: 'avg-desc',
+  currentTab: 'roster'      // last-active tab; restored on reload
 };
+
+const VALID_TABS = new Set(['roster', 'weights', 'lineup', 'scrimmage']);
 
 const SORT_MODES = new Set(['avg-desc', 'avg-asc', 'name-asc', 'name-desc']);
 
@@ -249,12 +271,19 @@ function save(opts = {}) {
     })),
     weights: S.weights,
     settings: S.settings,
+    currentTab: S.currentTab,
     lineup: {
       optimizationMode: S.lineup.optimizationMode,
       overrides: S.lineup.overrides,
       liberoConfig: S.lineup.liberoConfig,
       subPatterns: S.lineup.subPatterns,
       pairings: S.lineup.pairings
+    },
+    scrimmage: {
+      teamCount: S.scrimmage.teamCount,
+      attendance: S.scrimmage.attendance
+      // teams + lastSpread are intentionally NOT persisted; the user picks
+      // teams fresh each session. (Save-to-favorites is future scope.)
     },
     lastEdited: S.lastEdited,
     rosterSort: S.rosterSort,
@@ -280,10 +309,40 @@ function hasMeaningfulState() {
 }
 
 function load() {
+  // Read local-only preferences (currentTab, attendance, etc.) from
+  // localStorage even when we end up loading from URL — those aren't part
+  // of the team data and shouldn't be reset by a fresh hash.
+  let localOnly = null;
+  try {
+    const raw = safeStorage.get(STORAGE_KEY);
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data && typeof data === 'object') {
+        localOnly = {
+          currentTab: VALID_TABS.has(data.currentTab) ? data.currentTab : null,
+          scrimmage: (data.scrimmage && typeof data.scrimmage === 'object') ? data.scrimmage : null
+        };
+      }
+    }
+  } catch (e) { /* ignore */ }
+
   const urlState = readStateFromUrl();
   if (urlState) {
     applyLoadedState(urlState);
-    // Mirror to localStorage but keep the loaded timestamp (don't bump it)
+    // Restore local-only prefs that the URL hash doesn't carry.
+    if (localOnly) {
+      if (localOnly.currentTab) S.currentTab = localOnly.currentTab;
+      if (localOnly.scrimmage) {
+        S.scrimmage = {
+          ...S.scrimmage,
+          attendance: (localOnly.scrimmage.attendance && typeof localOnly.scrimmage.attendance === 'object')
+            ? localOnly.scrimmage.attendance : S.scrimmage.attendance,
+          teamCount: (localOnly.scrimmage.teamCount === 2 || localOnly.scrimmage.teamCount === 3 || localOnly.scrimmage.teamCount === 4)
+            ? localOnly.scrimmage.teamCount : S.scrimmage.teamCount
+        };
+      }
+    }
+    // Mirror back to localStorage so future saves don't drop the local-only prefs.
     save({ silent: true });
     return { fromUrl: true };
   }
@@ -351,9 +410,23 @@ function applyLoadedState(data) {
       pairings: Array.isArray(data.lineup.pairings) ? data.lineup.pairings : []
     };
   }
+  if (data.scrimmage && typeof data.scrimmage === 'object') {
+    const tc = data.scrimmage.teamCount;
+    S.scrimmage = {
+      ...defaultScrimmage(),
+      teamCount: (tc === 2 || tc === 3 || tc === 4) ? tc : 2,
+      attendance: (data.scrimmage.attendance && typeof data.scrimmage.attendance === 'object')
+        ? data.scrimmage.attendance : {},
+      // Teams are intentionally NOT restored — user wants a fresh "Pick teams"
+      // each session. A future "save to favorites" will live in its own slot.
+      teams: [],
+      lastSpread: null
+    };
+  }
   if (typeof data.lastEdited === 'number') S.lastEdited = data.lastEdited;
   if (SORT_MODES.has(data.rosterSort)) S.rosterSort = data.rosterSort;
   if (SORT_MODES.has(data.benchSort)) S.benchSort = data.benchSort;
+  if (VALID_TABS.has(data.currentTab)) S.currentTab = data.currentTab;
 }
 
 /* ===== Sorting ===== */
@@ -801,6 +874,9 @@ function chooseStarters(roster, system, mode, settings, forced, ruleset, pairing
   const forcedScore = assignments.reduce((s, a) => s + playerFitForRole(a.player, a.role, settings), 0);
 
   // Filter pairings to ones whose players exist in the roster (defensive).
+  // 'together' (default) means both-or-neither in starters; 'apart' means
+  // never both. Apart-pairs only matter when both would be in starters
+  // (single-team scope), so they reduce to: not both in starters.
   const rosterIds = new Set(roster.map(p => p.id));
   const activePairings = (pairings || []).filter(pr =>
     pr && pr.a && pr.b && pr.a !== pr.b && rosterIds.has(pr.a) && rosterIds.has(pr.b)
@@ -808,7 +884,13 @@ function chooseStarters(roster, system, mode, settings, forced, ruleset, pairing
 
   function pairingsSatisfied(currentIds) {
     for (const pr of activePairings) {
-      if (currentIds.has(pr.a) !== currentIds.has(pr.b)) return false;
+      const aIn = currentIds.has(pr.a);
+      const bIn = currentIds.has(pr.b);
+      if ((pr.kind || 'together') === 'apart') {
+        if (aIn && bIn) return false;
+      } else {
+        if (aIn !== bIn) return false;
+      }
     }
     return true;
   }
@@ -1167,6 +1249,343 @@ function generateLineup(state) {
   };
 }
 
+/* ===== Scrimmage team picker =====
+   Splits tonight's available players into N evenly-matched teams.
+   Honours pairings (must-play-together) by treating linked players as a
+   single bucket during assignment.
+
+   Algorithm: greedy seeding (largest-bucket-first to weakest team) followed
+   by hill-climbing 1-for-1 swaps between the strongest and weakest teams to
+   shrink the total-skill spread. Pure-function: takes a state object,
+   returns { teams: [[playerId,...],...], totals, spread, error }. */
+function isHereTonight(state, player) {
+  // Attendance is a per-session override of roster availability:
+  //   - if the user has explicitly toggled attendance for this player, that wins
+  //   - otherwise mirror the roster's available flag
+  if (!player) return false;
+  if (!(player.name || '').trim()) return false;
+  const a = state.scrimmage && state.scrimmage.attendance;
+  if (a && (player.id in a)) return !!a[player.id];
+  return !!player.available;
+}
+
+// Cost weights used by the scrimmage local-search. Total-skill spread
+// dominates; setting / hitting / blocking spreads and missing-role penalties
+// are secondary nudges so we don't ship a team with no setter, no middle, etc.
+const TEAM_COST = {
+  totalWeight: 1.0,
+  settingWeight: 0.3,
+  hittingWeight: 0.3,
+  blockingWeight: 0.3,
+  noSetterPenalty: 5.0,
+  noMBPenalty: 3.0
+};
+
+// Team scoring counts only the on-floor 6 — the weakest player on a 7-player
+// team is the rotating sub and shouldn't pad the team total.
+const ROUND_SIZE = 6;
+
+function _onFloor(team, subOverrides) {
+  if (!Array.isArray(team) || team.length === 0) return [];
+  // If the coach has manually designated subs, exclude them first; then take
+  // top-ROUND_SIZE of what remains (still skill-sorted in case the coach
+  // forced too few subs). When no overrides are set, fall back to the
+  // skill-only auto-pick.
+  if (subOverrides && subOverrides.length) {
+    const overrideSet = new Set(subOverrides);
+    const undesignated = team.filter(p => !overrideSet.has(p.id));
+    if (undesignated.length <= ROUND_SIZE) return undesignated;
+    return undesignated.slice().sort((a, b) => playerSkillRaw(b) - playerSkillRaw(a)).slice(0, ROUND_SIZE);
+  }
+  if (team.length <= ROUND_SIZE) return team;
+  return team.slice().sort((a, b) => playerSkillRaw(b) - playerSkillRaw(a)).slice(0, ROUND_SIZE);
+}
+
+function effectiveTeamTotal(team, subOverrides) {
+  return _onFloor(team, subOverrides).reduce((s, p) => s + playerSkillRaw(p), 0);
+}
+
+function teamSubIds(team, subOverrides) {
+  if (!Array.isArray(team) || team.length === 0) return new Set();
+  const onFloor = new Set(_onFloor(team, subOverrides).map(p => p.id));
+  const subs = new Set();
+  for (const p of team) if (!onFloor.has(p.id)) subs.add(p.id);
+  return subs;
+}
+
+function _teamMetrics(team) {
+  // Skill spreads use the on-floor 6 only; role coverage uses the full team
+  // (subs can rotate in to cover a missing setter/middle, so the team isn't
+  // really "missing a setter" if a sub-setter is on the bench).
+  const onFloor = _onFloor(team);
+  let total = 0, setting = 0, hitting = 0, blocking = 0;
+  for (const p of onFloor) {
+    total += playerSkillRaw(p);
+    setting += (p.skills.setting || 0);
+    hitting += (p.skills.hitting || 0);
+    blocking += (p.skills.blocking || 0);
+  }
+  let hasSetter = false, hasMB = false;
+  for (const p of team) {
+    if (!p) continue;
+    const pri = p.positions && p.positions[0];
+    const sec = p.positions && p.positions[1];
+    if (pri === 'S' || sec === 'S') hasSetter = true;
+    if (pri === 'MB' || sec === 'MB') hasMB = true;
+  }
+  return { total, setting, hitting, blocking, hasSetter, hasMB };
+}
+
+function _scrimmageCost(teams) {
+  const m = teams.map(_teamMetrics);
+  const spread = (key) => {
+    let mn = Infinity, mx = -Infinity;
+    for (const x of m) { if (x[key] < mn) mn = x[key]; if (x[key] > mx) mx = x[key]; }
+    return mx - mn;
+  };
+  let cost =
+    spread('total') * TEAM_COST.totalWeight
+    + spread('setting') * TEAM_COST.settingWeight
+    + spread('hitting') * TEAM_COST.hittingWeight
+    + spread('blocking') * TEAM_COST.blockingWeight;
+  for (const x of m) {
+    if (!x.hasSetter) cost += TEAM_COST.noSetterPenalty;
+    if (!x.hasMB) cost += TEAM_COST.noMBPenalty;
+  }
+  return cost;
+}
+
+function pickScrimmageTeams(state, opts) {
+  opts = opts || {};
+  state = state || S;
+  const sc = state.scrimmage || defaultScrimmage();
+  const tc = (sc.teamCount === 3 || sc.teamCount === 4) ? sc.teamCount : 2;
+  const here = state.players.filter(p => isHereTonight(state, p));
+  if (here.length < tc * 4) {
+    return { error: `Need at least ${tc * 4} players for ${tc} teams (you have ${here.length} tonight).`, teams: null };
+  }
+
+  // Build buckets of players that must end up together. Pairings list now
+  // distinguishes 'together' (default) and 'apart' kinds.
+  const allPairings = ((state.lineup && state.lineup.pairings) || []).filter(pr =>
+    pr && pr.a && pr.b && pr.a !== pr.b
+  );
+  const togetherPairs = allPairings.filter(pr => (pr.kind || 'together') === 'together');
+  const apartPairs = allPairings.filter(pr => pr.kind === 'apart');
+
+  const inHere = new Set(here.map(p => p.id));
+  const parent = new Map(here.map(p => [p.id, p.id]));
+  function find(x) {
+    while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); }
+    return x;
+  }
+  function union(a, b) {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  }
+  for (const pr of togetherPairs) {
+    if (inHere.has(pr.a) && inHere.has(pr.b)) union(pr.a, pr.b);
+  }
+  const bucketMap = new Map();
+  for (const p of here) {
+    const root = find(p.id);
+    if (!bucketMap.has(root)) bucketMap.set(root, []);
+    bucketMap.get(root).push(p);
+  }
+  const buckets = Array.from(bucketMap.values());
+
+  // Build apart-constraint adjacency on bucket level: bucket i and bucket j
+  // can't share a team if any (apart) pairing crosses them.
+  const playerToBucket = new Map();
+  buckets.forEach((b, i) => b.forEach(p => playerToBucket.set(p.id, i)));
+  const apartByBucket = new Map(); // bucketIdx -> Set of bucketIdx
+  for (const pr of apartPairs) {
+    if (!inHere.has(pr.a) || !inHere.has(pr.b)) continue;
+    const ba = playerToBucket.get(pr.a);
+    const bb = playerToBucket.get(pr.b);
+    if (ba == null || bb == null || ba === bb) continue; // same bucket = pairing overrides
+    if (!apartByBucket.has(ba)) apartByBucket.set(ba, new Set());
+    if (!apartByBucket.has(bb)) apartByBucket.set(bb, new Set());
+    apartByBucket.get(ba).add(bb);
+    apartByBucket.get(bb).add(ba);
+  }
+
+  function bucketsApartConflict(bucketIdx, teamBucketIdxs) {
+    const apart = apartByBucket.get(bucketIdx);
+    if (!apart) return false;
+    for (const other of teamBucketIdxs) if (apart.has(other)) return true;
+    return false;
+  }
+
+  const bucketStrength = b => b.reduce((s, p) => s + playerSkillRaw(p), 0);
+  const hasRoleAnchor = (b, role) => b.some(p => {
+    const pri = p.positions && p.positions[0];
+    const sec = p.positions && p.positions[1];
+    return pri === role || sec === role;
+  });
+
+  // Seed order: SETTERS first (so each team has a setter if at all possible),
+  // then MBs, then everything else by descending strength. Within each group,
+  // sort by descending strength.
+  const setterBuckets = buckets.filter(b => hasRoleAnchor(b, 'S'));
+  const mbBuckets = buckets.filter(b => hasRoleAnchor(b, 'MB') && !hasRoleAnchor(b, 'S'));
+  const restBuckets = buckets.filter(b => !setterBuckets.includes(b) && !mbBuckets.includes(b));
+  [setterBuckets, mbBuckets, restBuckets].forEach(g => g.sort((a, b) => bucketStrength(b) - bucketStrength(a)));
+
+  if (opts.shuffle) {
+    // Shuffle within each group so the role-anchored seed still distributes
+    // anchors across teams but the choice of which one goes where changes.
+    const shuffleInPlace = arr => {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+      }
+    };
+    shuffleInPlace(setterBuckets);
+    shuffleInPlace(mbBuckets);
+    shuffleInPlace(restBuckets);
+  }
+
+  const orderedBuckets = setterBuckets.concat(mbBuckets, restBuckets);
+  const orderToBucketIdx = orderedBuckets.map(b => playerToBucket.get(b[0].id));
+
+  // Team caps.
+  const total = here.length;
+  const baseSize = Math.floor(total / tc);
+  const remainder = total % tc;
+  const teamCaps = new Array(tc).fill(0).map((_, i) => i < remainder ? baseSize + 1 : baseSize);
+
+  // Seed: setter buckets round-robin (then MB, then rest), each going to the
+  // currently-weakest team that has capacity AND no apart-conflict.
+  const teams = Array.from({ length: tc }, () => []);
+  const teamBucketIdxs = Array.from({ length: tc }, () => new Set());
+  const totals = new Array(tc).fill(0);
+
+  for (let i = 0; i < orderedBuckets.length; i++) {
+    const bucket = orderedBuckets[i];
+    const myBucketIdx = orderToBucketIdx[i];
+    const isSetter = setterBuckets.includes(bucket);
+    const isMB = mbBuckets.includes(bucket);
+
+    let bestT = -1, bestVal = Infinity;
+    for (let t = 0; t < tc; t++) {
+      if (teams[t].length + bucket.length > teamCaps[t]) continue;
+      if (bucketsApartConflict(myBucketIdx, teamBucketIdxs[t])) continue;
+      // Strong preference: a team without a setter gets the next setter bucket;
+      // a team without an MB gets the next MB bucket.
+      if (isSetter && _teamMetrics(teams[t]).hasSetter) continue;
+      if (isMB && _teamMetrics(teams[t]).hasMB) continue;
+      if (totals[t] < bestVal) { bestVal = totals[t]; bestT = t; }
+    }
+    if (bestT < 0) {
+      // Pass 2 — drop the role-coverage filter, keep cap + apart.
+      for (let t = 0; t < tc; t++) {
+        if (teams[t].length + bucket.length > teamCaps[t]) continue;
+        if (bucketsApartConflict(myBucketIdx, teamBucketIdxs[t])) continue;
+        if (totals[t] < bestVal) { bestVal = totals[t]; bestT = t; }
+      }
+    }
+    if (bestT < 0) {
+      // Pass 3 — overflow the cap rather than violate apart. Pick the team
+      // with the smallest overflow (and weakest total) that still respects
+      // apart. Sub-counting handles teams >ROUND_SIZE gracefully.
+      for (let t = 0; t < tc; t++) {
+        if (bucketsApartConflict(myBucketIdx, teamBucketIdxs[t])) continue;
+        if (totals[t] < bestVal) { bestVal = totals[t]; bestT = t; }
+      }
+    }
+    if (bestT < 0) {
+      // Pass 4 — apart constraints are infeasible (every team has a conflict).
+      // Place on the weakest team and surface a warning later.
+      let weakest = 0;
+      for (let t = 1; t < tc; t++) if (totals[t] < totals[weakest]) weakest = t;
+      bestT = weakest;
+    }
+    teams[bestT].push(...bucket);
+    teamBucketIdxs[bestT].add(myBucketIdx);
+    totals[bestT] += bucketStrength(bucket);
+  }
+
+  // Local search: 1-for-1 swaps between any pair of teams. Restricted to
+  // single-player buckets so we don't break a pairing. Reject swaps that
+  // create apart-pair conflicts. Accept if cost decreases.
+  const bucketSize = id => buckets[playerToBucket.get(id)].length;
+  let improved = true, iters = 0;
+  let curCost = _scrimmageCost(teams);
+  while (improved && iters < 200) {
+    improved = false;
+    iters++;
+    let bestSwap = null;
+    for (let ti = 0; ti < tc; ti++) {
+      for (let tj = ti + 1; tj < tc; tj++) {
+        for (const a of teams[ti]) {
+          if (bucketSize(a.id) !== 1) continue;
+          const aBucket = playerToBucket.get(a.id);
+          for (const b of teams[tj]) {
+            if (bucketSize(b.id) !== 1) continue;
+            const bBucket = playerToBucket.get(b.id);
+            // Apart check after the proposed swap.
+            const tiBuckets = new Set(teamBucketIdxs[ti]); tiBuckets.delete(aBucket); tiBuckets.add(bBucket);
+            const tjBuckets = new Set(teamBucketIdxs[tj]); tjBuckets.delete(bBucket); tjBuckets.add(aBucket);
+            if (bucketsApartConflict(bBucket, tiBuckets) && tiBuckets.has(bBucket) === false) {
+              // shouldn't happen but defensive
+            }
+            // Direct check: would aBucket conflict with anyone left in tj? would bBucket conflict with anyone left in ti?
+            const apartA = apartByBucket.get(aBucket);
+            const apartB = apartByBucket.get(bBucket);
+            let wouldConflict = false;
+            if (apartA) for (const x of tjBuckets) if (apartA.has(x) && x !== aBucket) { wouldConflict = true; break; }
+            if (!wouldConflict && apartB) for (const x of tiBuckets) if (apartB.has(x) && x !== bBucket) { wouldConflict = true; break; }
+            if (wouldConflict) continue;
+
+            // Try the swap on a temporary copy to score it.
+            const trialTeams = teams.map(t => t.slice());
+            trialTeams[ti] = trialTeams[ti].filter(p => p.id !== a.id);
+            trialTeams[ti].push(b);
+            trialTeams[tj] = trialTeams[tj].filter(p => p.id !== b.id);
+            trialTeams[tj].push(a);
+            const trialCost = _scrimmageCost(trialTeams);
+            if (trialCost < curCost - 1e-6 && (!bestSwap || trialCost < bestSwap.cost)) {
+              bestSwap = { ti, tj, a, b, cost: trialCost, aBucket, bBucket };
+            }
+          }
+        }
+      }
+    }
+    if (bestSwap) {
+      const { ti, tj, a, b, aBucket, bBucket } = bestSwap;
+      teams[ti] = teams[ti].filter(p => p.id !== a.id); teams[ti].push(b);
+      teams[tj] = teams[tj].filter(p => p.id !== b.id); teams[tj].push(a);
+      teamBucketIdxs[ti].delete(aBucket); teamBucketIdxs[ti].add(bBucket);
+      teamBucketIdxs[tj].delete(bBucket); teamBucketIdxs[tj].add(aBucket);
+      totals[ti] = totals[ti] - playerSkillRaw(a) + playerSkillRaw(b);
+      totals[tj] = totals[tj] - playerSkillRaw(b) + playerSkillRaw(a);
+      curCost = bestSwap.cost;
+      improved = true;
+    }
+  }
+
+  // Surface warnings about role coverage (after best-effort).
+  const finalMetrics = teams.map(_teamMetrics);
+  const warnings = [];
+  finalMetrics.forEach((m, i) => {
+    const issues = [];
+    if (!m.hasSetter) issues.push('no setter');
+    if (!m.hasMB) issues.push('no middle');
+    if (teams[i].length < 6) issues.push(`${teams[i].length} players (needs subs for 6v6)`);
+    if (issues.length) warnings.push(`Team ${i + 1}: ${issues.join(', ')}`);
+  });
+
+  // Effective totals (on-floor 6 only) — matches what the UI will display.
+  const effTotals = teams.map(t => effectiveTeamTotal(t));
+  return {
+    teams: teams.map(t => t.map(p => p.id)),
+    totals: effTotals,
+    spread: Math.max.apply(null, effTotals) - Math.min.apply(null, effTotals),
+    warnings: warnings.length ? warnings : null
+  };
+}
+
 // Expose pure functions for Block 6 page.evaluate tests.
 if (typeof window !== 'undefined') {
   window.generateLineup = generateLineup;
@@ -1177,6 +1596,8 @@ if (typeof window !== 'undefined') {
   window.applySubPatterns = applySubPatterns;
   window.playerFitForRole = playerFitForRole;
   window.validRolesForPlayer = validRolesForPlayer;
+  window.pickScrimmageTeams = pickScrimmageTeams;
+  window.isHereTonight = isHereTonight;
   window.SUB_PATTERN_TEMPLATES = SUB_PATTERN_TEMPLATES;
   window.SYSTEM_REQUIREMENTS = SYSTEM_REQUIREMENTS;
 }
@@ -1295,7 +1716,11 @@ function moveGhost(ghost, x, y) {
 }
 
 function findDropTarget(x, y) {
-  // Returns: { kind: 'zone', rotIdx, zone, el } | { kind: 'bench', el } | null
+  // Returns one of:
+  //   { kind: 'zone',   rotIdx, zone, el }
+  //   { kind: 'bench',  el }
+  //   { kind: 'team',   teamIdx, targetPlayerId?, el }
+  //   null
   const els = document.elementsFromPoint(x, y);
   for (const e of els) {
     const zoneEl = e.classList?.contains('rot-zone') ? e : e.closest && e.closest('.rot-zone');
@@ -1311,6 +1736,22 @@ function findDropTarget(x, y) {
     }
     if (e.tagName === 'LI' && e.parentElement?.id === 'benchList') {
       return { kind: 'bench', el: document.getElementById('benchCard') };
+    }
+    // Team cards (Scrimmage tab). A drop on a specific team-player is a swap;
+    // a drop on the card body is a move.
+    const playerLi = e.classList?.contains('team-player') ? e : (e.closest && e.closest('.team-player'));
+    if (playerLi) {
+      const teamIdx = Number(playerLi.dataset.teamIdx);
+      if (!Number.isNaN(teamIdx)) {
+        return { kind: 'team', teamIdx, targetPlayerId: playerLi.dataset.playerId, el: playerLi };
+      }
+    }
+    const teamCard = e.classList?.contains('team-card') ? e : (e.closest && e.closest('.team-card'));
+    if (teamCard) {
+      const teamIdx = Number(teamCard.dataset.teamIdx);
+      if (!Number.isNaN(teamIdx)) {
+        return { kind: 'team', teamIdx, el: teamCard };
+      }
     }
   }
   return null;
@@ -1333,6 +1774,13 @@ function updateDropHighlight(x, y, ds) {
       lastHighlight = null;
       return;
     }
+    if (ds.kind === 'team' && target.kind === 'team') {
+      // Same team: drop is a sub/active swap when the target is a different
+      // player, no-op when dropped on the team card body or self.
+      const sameTeam = ds.teamIdx === target.teamIdx;
+      const onSelf = sameTeam && (target.targetPlayerId === ds.playerId || !target.targetPlayerId);
+      if (onSelf) { lastHighlight = null; return; }
+    }
     target.el.classList.add('drop-target-active');
     lastHighlight = target.el;
   } else {
@@ -1345,6 +1793,15 @@ function clearDropHighlight() {
 }
 
 function performDrop(source, target) {
+  // Scrimmage tab: team-to-team drops don't need S.result. Same-team drops
+  // onto a different player trigger a sub/active role swap; same-team drops
+  // onto the team card body or the same player are handled (as no-ops) inside
+  // applyTeamSwap.
+  if (source.kind === 'team' && target.kind === 'team') {
+    applyTeamSwap(source.teamIdx, target.teamIdx, source.playerId, target.targetPlayerId || null);
+    return;
+  }
+
   if (!S.result) return;
 
   // bench → zone: pin player at this rotation+zone
@@ -2025,16 +2482,24 @@ function buildSubPatternCard(pat, idx) {
   return card;
 }
 
-/* Pairings panel: each entry forces both named players to start together.
-   Useful for "these two ride together or not at all" cases (twins, friend
-   group, returning libero who only plays with her primary setter, etc.). */
+/* Pairings panel: each entry forces both named players to start together
+   (kind:'together') OR forces them onto different teams (kind:'apart').
+   Rendered into both the Lineup tab and the Scrimmage tab — they share the
+   same S.lineup.pairings state so edits in either place sync. */
 function renderPairingsPanel() {
-  const body = $('#pairingsBody');
-  if (!body) return;
-  body.replaceChildren();
+  const bodies = [$('#pairingsBody'), $('#scrimmagePairingsBody')].filter(Boolean);
+  if (bodies.length === 0) return;
   const pairings = S.lineup.pairings;
-  const counter = $('#pairingsCounter');
-  if (counter) counter.textContent = pairings.length ? String(pairings.length) : '';
+  const counter1 = $('#pairingsCounter');
+  const counter2 = $('#scrimmagePairingsCounter');
+  const counterText = pairings.length ? String(pairings.length) : '';
+  if (counter1) counter1.textContent = counterText;
+  if (counter2) counter2.textContent = counterText;
+  bodies.forEach(body => _renderPairingsBody(body, pairings));
+}
+
+function _renderPairingsBody(body, pairings) {
+  body.replaceChildren();
 
   const playerOpts = [{ value: '', label: '— pick player —' }]
     .concat(S.players
@@ -2043,8 +2508,26 @@ function renderPairingsPanel() {
 
   pairings.forEach((pair, i) => {
     const card = el('div', { cls: 'lb-sub-card' });
+    if (!pair.kind) pair.kind = 'together';
     const aSel = playerSelect(playerOpts, pair.a, v => { pair.a = v || null; save(); scheduleRegen(); });
     const bSel = playerSelect(playerOpts, pair.b, v => { pair.b = v || null; save(); scheduleRegen(); });
+    const kindSel = el('select', {
+      cls: 'lb-pair-kind',
+      on: {
+        change: e => {
+          pair.kind = e.target.value === 'apart' ? 'apart' : 'together';
+          save();
+          renderPairingsPanel();
+          scheduleRegen();
+        }
+      }
+    });
+    [['together', 'must play together'], ['apart', 'must be on different teams']].forEach(([v, label]) => {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = label;
+      kindSel.appendChild(o);
+    });
+    kindSel.value = pair.kind;
     const delBtn = el('button', {
       cls: 'btn btn-secondary btn-tiny',
       text: '✕',
@@ -2059,11 +2542,17 @@ function renderPairingsPanel() {
     });
     card.appendChild(el('div', { cls: 'lb-sub-fields' }, [
       el('label', {}, ['Player A: ', aSel]),
-      el('span', { cls: 'lb-pair-and', text: '+' }),
+      el('span', { cls: 'lb-pair-and', text: pair.kind === 'apart' ? '⇄' : '+' }),
       el('label', {}, ['Player B: ', bSel]),
       delBtn
     ]));
-    card.appendChild(el('div', { cls: 'lb-sub-desc', text: 'Both must start together — neither plays without the other.' }));
+    card.appendChild(el('div', { cls: 'lb-row' }, [
+      el('label', { text: 'Constraint' }), kindSel
+    ]));
+    const desc = pair.kind === 'apart'
+      ? 'Never on the same lineup or scrimmage team.'
+      : 'Both must start together — neither plays without the other.';
+    card.appendChild(el('div', { cls: 'lb-sub-desc', text: desc }));
     body.appendChild(card);
   });
 
@@ -2073,7 +2562,7 @@ function renderPairingsPanel() {
     text: '+ Add pairing',
     on: {
       click: () => {
-        S.lineup.pairings.push({ a: null, b: null });
+        S.lineup.pairings.push({ a: null, b: null, kind: 'together' });
         save();
         renderPairingsPanel();
       }
@@ -2191,10 +2680,290 @@ function renderBench() {
   });
 }
 
+/* ===== Scrimmage Render ===== */
+
+function renderScrimmage() {
+  renderAttendancePanel();
+  renderTeamGrid();
+  renderPairingsPanel(); // mirror into the Scrimmage-tab pairings panel
+}
+
+function renderAttendancePanel() {
+  const body = $('#attendanceBody');
+  if (!body) return;
+  body.replaceChildren();
+  const named = S.players.filter(p => (p.name || '').trim());
+  const counter = $('#attendanceCounter');
+
+  if (named.length === 0) {
+    body.appendChild(el('p', { cls: 'hint', text: 'Add players on the Roster tab first.' }));
+    if (counter) counter.textContent = '';
+    return;
+  }
+
+  // Quick toggle row
+  const allRow = el('div', { cls: 'attendance-quick' });
+  allRow.appendChild(el('button', {
+    cls: 'btn btn-secondary btn-tiny',
+    text: 'All here',
+    on: { click: () => { named.forEach(p => S.scrimmage.attendance[p.id] = true); save(); renderScrimmage(); } }
+  }));
+  allRow.appendChild(el('button', {
+    cls: 'btn btn-secondary btn-tiny',
+    text: 'None',
+    on: { click: () => { named.forEach(p => S.scrimmage.attendance[p.id] = false); save(); renderScrimmage(); } }
+  }));
+  allRow.appendChild(el('button', {
+    cls: 'btn btn-secondary btn-tiny',
+    text: 'Match roster availability',
+    on: {
+      click: () => {
+        named.forEach(p => S.scrimmage.attendance[p.id] = !!p.available);
+        save();
+        renderScrimmage();
+      }
+    }
+  }));
+  body.appendChild(allRow);
+
+  // Player checklist
+  const list = el('div', { cls: 'attendance-list' });
+  const sorted = sortByMode(named, 'name-asc', p => p.name, p => playerSkillRaw(p));
+  let hereCount = 0;
+  for (const p of sorted) {
+    const here = isHereTonight(S, p);
+    if (here) hereCount++;
+    const cb = el('input', { attrs: { type: 'checkbox' } });
+    cb.checked = here;
+    cb.addEventListener('change', e => {
+      S.scrimmage.attendance[p.id] = !!e.target.checked;
+      save();
+      renderAttendancePanel();
+    });
+    const role = (p.positions && p.positions[0]) || '';
+    const tag = el('span', { cls: 'bench-role-tag', text: role });
+    const skill = el('span', { cls: 'bench-stat-pill', text: playerSkillRaw(p).toFixed(1) });
+    const label = el('label', { cls: 'attendance-row' + (p.available ? '' : ' is-unavailable') }, [
+      cb,
+      el('span', { cls: 'attendance-name', text: p.name }),
+      tag,
+      skill
+    ]);
+    list.appendChild(label);
+  }
+  body.appendChild(list);
+
+  if (counter) counter.textContent = `${hereCount} / ${named.length}`;
+}
+
+function renderTeamGrid() {
+  const grid = $('#teamGrid');
+  const wrap = $('#scrimmageResult');
+  const status = $('#scrimmageStatus');
+  const shuffleBtn = $('#shuffleTeamsBtn');
+  if (!grid || !wrap) return;
+
+  const teams = S.scrimmage.teams || [];
+  if (!teams.length) {
+    wrap.hidden = true;
+    if (shuffleBtn) shuffleBtn.hidden = true;
+    if (status && !status.classList.contains('lineup-status-error')) status.textContent = '';
+    return;
+  }
+
+  // Validate that every player ID still exists in the roster (handles roster
+  // deletes). Filter dead IDs and re-pick if any team is now empty.
+  const idSet = new Set(S.players.map(p => p.id));
+  const cleaned = teams.map(t => t.filter(id => idSet.has(id)));
+  if (cleaned.some(t => t.length === 0)) {
+    wrap.hidden = true;
+    if (status) {
+      status.textContent = 'Roster changed since last pick. Tap "Pick teams" to refresh.';
+      status.className = 'lineup-status lineup-status-error';
+    }
+    return;
+  }
+
+  wrap.hidden = false;
+  if (shuffleBtn) shuffleBtn.hidden = false;
+  grid.replaceChildren();
+
+  const playerById = new Map(S.players.map(p => [p.id, p]));
+  // Resolve each team to player objects so we can compute sub sets and totals.
+  const resolved = cleaned.map(ids => ids.map(id => playerById.get(id)).filter(Boolean));
+  const subOverrides = S.scrimmage.subOverrides || [];
+  const totals = resolved.map(t => effectiveTeamTotal(t, subOverrides));
+  const subSets = resolved.map(t => teamSubIds(t, subOverrides));
+  const minTotal = Math.min.apply(null, totals);
+  const maxTotal = Math.max.apply(null, totals);
+  const spread = maxTotal - minTotal;
+  const totalCount = cleaned.reduce((n, t) => n + t.length, 0);
+
+  resolved.forEach((teamPlayers, idx) => {
+    const card = el('div', { cls: 'team-card', dataset: { teamIdx: String(idx) } });
+    const isStrong = totals[idx] === maxTotal && spread > 0.001;
+    const isWeak = totals[idx] === minTotal && spread > 0.001;
+    if (isStrong) card.classList.add('is-strong');
+    if (isWeak) card.classList.add('is-weak');
+
+    const head = el('div', { cls: 'team-card-head' }, [
+      el('span', { cls: 'team-name', text: `Team ${idx + 1}` }),
+      el('span', { cls: 'team-total', text: totals[idx].toFixed(1) })
+    ]);
+    card.appendChild(head);
+
+    const list = el('ul', { cls: 'team-list' });
+    const subIds = subSets[idx];
+    // Sort by skill desc, then push any subs to the bottom so the on-floor 6
+    // sit together at the top regardless of skill — keeps a manually-promoted
+    // weak player sitting with the actives, and any high-skill manual sub
+    // sitting at the bottom where the user expects to see it.
+    const sorted = teamPlayers.slice()
+      .sort((a, b) => playerSkillRaw(b) - playerSkillRaw(a))
+      .sort((a, b) => (subIds.has(a.id) ? 1 : 0) - (subIds.has(b.id) ? 1 : 0));
+    sorted.forEach(player => {
+      const role = (player.positions && player.positions[0]) || '';
+      const isSub = subIds.has(player.id);
+      const cls = ['team-player'];
+      if (role) cls.push(`team-player-${role}`);
+      if (isSub) cls.push('is-sub');
+      const children = [
+        el('span', { cls: 'team-player-name', text: player.name || '?' })
+      ];
+      if (isSub) children.push(el('span', { cls: 'team-sub-tag', text: 'SUB', title: 'Rotates in — not counted in team total' }));
+      children.push(el('span', { cls: `bench-role-tag bench-role-tag-${role || 'NONE'}`, text: role }));
+      children.push(el('span', { cls: 'bench-stat-pill', text: playerSkillRaw(player).toFixed(1) }));
+      const li = el('li', {
+        cls: cls.join(' '),
+        dataset: { playerId: player.id, teamIdx: String(idx) },
+        attrs: { title: isSub ? 'Substitute — drag onto another team to move' : 'Drag onto another team to swap' },
+        on: {
+          pointerdown: e => onDragStart({ kind: 'team', playerId: player.id, teamIdx: idx }, e)
+        }
+      }, children);
+      list.appendChild(li);
+    });
+    card.appendChild(list);
+    grid.appendChild(card);
+  });
+
+  $('#teamSpread').textContent = spread.toFixed(1);
+  $('#teamPlayerCount').textContent = String(totalCount);
+  if (status) {
+    const warnings = S.scrimmage.lastWarnings;
+    if (warnings && warnings.length) {
+      status.textContent = warnings.join(' · ');
+      status.className = 'lineup-status lineup-status-warn';
+    } else {
+      status.textContent = '';
+      status.className = 'lineup-status';
+    }
+  }
+}
+
+function runPickTeams(opts) {
+  opts = opts || {};
+  const result = pickScrimmageTeams(S, { shuffle: !!opts.shuffle });
+  const status = $('#scrimmageStatus');
+  if (result.error) {
+    S.scrimmage.teams = [];
+    S.scrimmage.lastSpread = null;
+    save();
+    if (status) {
+      status.textContent = result.error;
+      status.className = 'lineup-status lineup-status-error';
+    }
+    renderTeamGrid();
+    return;
+  }
+  S.scrimmage.teams = result.teams;
+  S.scrimmage.lastSpread = result.spread;
+  S.scrimmage.lastWarnings = result.warnings || null;
+  // A fresh pick wipes any manual sub designations from the previous split.
+  S.scrimmage.subOverrides = [];
+  save();
+  renderTeamGrid();
+}
+
+/* applyTeamSwap: drop a player onto another player or team card.
+   - Cross-team drop: move (or swap) players between teams.
+   - Intra-team drop (same team, target player named): swap sub status.
+     The on-floor player becomes the sub; the sub becomes on-floor. The team
+     total recomputes. */
+function applyTeamSwap(srcTeamIdx, targetTeamIdx, playerId, targetPlayerId) {
+  const teams = S.scrimmage.teams.map(t => t.slice());
+  if (!teams[srcTeamIdx] || !teams[targetTeamIdx]) return;
+
+  if (srcTeamIdx === targetTeamIdx) {
+    // INTRA-TEAM: swap sub status of two players on the same team.
+    if (!targetPlayerId || playerId === targetPlayerId) return;
+    const team = teams[srcTeamIdx];
+    if (!team.includes(playerId) || !team.includes(targetPlayerId)) return;
+
+    const playerById = new Map(S.players.map(p => [p.id, p]));
+    const teamPlayers = team.map(id => playerById.get(id)).filter(Boolean);
+    const overrides = (S.scrimmage.subOverrides || []).slice();
+    const onFloorIds = new Set(_onFloor(teamPlayers, overrides).map(p => p.id));
+    const aIsSub = !onFloorIds.has(playerId);
+    const bIsSub = !onFloorIds.has(targetPlayerId);
+    if (aIsSub === bIsSub) return; // both same status -> no swap to do
+
+    // Whichever player is currently on-floor becomes the new sub.
+    const newOverrides = overrides.filter(id => id !== playerId && id !== targetPlayerId);
+    const newSubId = aIsSub ? targetPlayerId : playerId;
+    newOverrides.push(newSubId);
+    S.scrimmage.subOverrides = newOverrides;
+
+    // Recompute spread.
+    const subOv = S.scrimmage.subOverrides;
+    const resolved = teams.map(t => t.map(id => playerById.get(id)).filter(Boolean));
+    const totals = resolved.map(t => effectiveTeamTotal(t, subOv));
+    S.scrimmage.lastSpread = Math.max.apply(null, totals) - Math.min.apply(null, totals);
+    save();
+    renderTeamGrid();
+    return;
+  }
+
+  // CROSS-TEAM: move (or swap) between teams.
+  const srcIdx = teams[srcTeamIdx].indexOf(playerId);
+  if (srcIdx < 0) return;
+  teams[srcTeamIdx].splice(srcIdx, 1);
+
+  if (targetPlayerId) {
+    const tIdx = teams[targetTeamIdx].indexOf(targetPlayerId);
+    if (tIdx >= 0) {
+      teams[targetTeamIdx].splice(tIdx, 1);
+      teams[srcTeamIdx].push(targetPlayerId);
+    }
+  }
+  teams[targetTeamIdx].push(playerId);
+  S.scrimmage.teams = teams;
+
+  // Cross-team moves invalidate per-team sub designations: clear overrides for
+  // any player whose team is no longer the same, since the override was tied
+  // to the prior team composition.
+  const stillOnSameTeam = new Set(teams.flat());
+  S.scrimmage.subOverrides = (S.scrimmage.subOverrides || []).filter(id => stillOnSameTeam.has(id));
+
+  const playerById = new Map(S.players.map(p => [p.id, p]));
+  const subOv = S.scrimmage.subOverrides;
+  const resolved = teams.map(t => t.map(id => playerById.get(id)).filter(Boolean));
+  const totals = resolved.map(t => effectiveTeamTotal(t, subOv));
+  S.scrimmage.lastSpread = Math.max.apply(null, totals) - Math.min.apply(null, totals);
+  save();
+  renderTeamGrid();
+}
+
 /* ===== Tabs / Toast / Modal ===== */
 function setTab(name) {
+  if (!VALID_TABS.has(name)) name = 'roster';
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === name + 'Tab'));
+  if (name === 'scrimmage') renderScrimmage();
+  if (S.currentTab !== name) {
+    S.currentTab = name;
+    save();
+  }
 }
 
 function toast(msg, ms = 2200) {
@@ -2347,6 +3116,27 @@ function init() {
     toast('Pins cleared.');
   });
 
+  // Scrimmage controls
+  const teamCountSel = $('#teamCount');
+  if (teamCountSel) {
+    teamCountSel.value = String(S.scrimmage.teamCount);
+    teamCountSel.addEventListener('change', e => {
+      const v = Number(e.target.value);
+      if (v === 2 || v === 3 || v === 4) {
+        S.scrimmage.teamCount = v;
+        S.scrimmage.teams = []; // invalidate previous split
+        S.scrimmage.lastSpread = null;
+        save();
+        renderTeamGrid();
+      }
+    });
+  }
+  $('#genTeamsBtn')?.addEventListener('click', () => runPickTeams());
+  $('#shuffleTeamsBtn')?.addEventListener('click', () => {
+    runPickTeams({ shuffle: true });
+    toast('Reshuffled.');
+  });
+
   $('#shareBtn').addEventListener('click', openShareModal);
 
   // Help button delegation: any element with [data-help="key"] opens that help entry
@@ -2412,6 +3202,9 @@ function init() {
   renderWeights();
   updateCounts();
   updateLastEditedDisplay();
+  // Restore the last-active tab (persisted in S.currentTab); falls back to
+  // roster if absent or invalid.
+  setTab(S.currentTab || 'roster');
 
   // First-time welcome when opening someone else's shared link
   if (loadResult?.fromUrl) {

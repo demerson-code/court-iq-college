@@ -909,8 +909,9 @@ main {
   bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--text);
-  color: white;
+  background: var(--court-deep);
+  color: var(--text);
+  border: 1px solid var(--green);
   padding: 12px 22px;
   border-radius: 24px;
   font-size: 14px;
@@ -918,6 +919,8 @@ main {
   z-index: 100;
   box-shadow: var(--shadow-lg);
   animation: toastIn 0.25s;
+  max-width: 90vw;
+  text-align: center;
 }
 @keyframes toastIn {
   from { opacity: 0; transform: translate(-50%, 10px); }
@@ -1550,6 +1553,7 @@ body.dragging-court .bench-drop-zone { display: block; }
   min-height: 18px;
 }
 .lineup-status-error { color: var(--bad); font-weight: 600; }
+.lineup-status-warn { color: var(--warn); font-weight: 600; }
 
 /* ----- Rotation grid ----- */
 .rotation-grid {
@@ -1837,6 +1841,174 @@ body.dragging-court .bench-drop-zone { display: block; }
   border-radius: 999px;
   margin-right: 6px;
   letter-spacing: 0.3px;
+}
+
+/* ===== Scrimmage tab ===== */
+#scrimmageBuilder { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+
+.scrimmage-summary {
+  display: flex;
+  gap: 24px;
+  justify-content: center;
+  padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.team-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.team-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.team-card.is-strong { border-color: var(--green); box-shadow: 0 0 0 1px var(--green) inset; }
+.team-card.is-weak { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn) inset; }
+.team-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 8px;
+}
+.team-name { font-size: 14px; font-weight: 700; color: var(--text); }
+.team-total {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--green-light);
+  background: rgba(0, 150, 57, 0.12);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+.team-card.is-strong .team-total { color: var(--green-light); }
+.team-card.is-weak .team-total { color: var(--warn); background: rgba(245, 184, 46, 0.12); }
+.team-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.team-player {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.team-player:active { cursor: grabbing; }
+.team-player.drop-target-active {
+  background: rgba(0, 150, 57, 0.15);
+  border-color: var(--green);
+}
+.team-card.drop-target-active {
+  background: rgba(0, 150, 57, 0.06);
+  border-color: var(--green);
+}
+.team-player-name {
+  flex: 1;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Role color cues: subtle left-border + slightly tinted role tag bg.
+   Picks match the lineup-tab rot-chip colours. */
+.team-player-S    { border-left-color: #8B5CF6; }
+.team-player-OPP  { border-left-color: #F59E0B; }
+.team-player-OH   { border-left-color: #38BDF8; }
+.team-player-MB   { border-left-color: #EF4444; }
+.team-player-L    { border-left-color: var(--green); }
+.team-player-DS   { border-left-color: #94A3B8; }
+
+.bench-role-tag-S    { background: rgba(139, 92, 246, 0.20); color: #C4B5FD; }
+.bench-role-tag-OPP  { background: rgba(245, 158, 11, 0.20); color: #FCD34D; }
+.bench-role-tag-OH   { background: rgba(56, 189, 248, 0.20); color: #7DD3FC; }
+.bench-role-tag-MB   { background: rgba(239, 68, 68, 0.20);  color: #FCA5A5; }
+.bench-role-tag-L    { background: rgba(0, 150, 57, 0.20);   color: var(--green-light); }
+.bench-role-tag-DS   { background: rgba(148, 163, 184, 0.20); color: #CBD5E1; }
+
+/* Substitute row: greyed-out background, smaller label, separator above */
+.team-player.is-sub {
+  opacity: 0.6;
+  border-left-style: dashed;
+  margin-top: 6px;
+  position: relative;
+}
+.team-player.is-sub::before {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  border-top: 1px dashed var(--border);
+}
+.team-sub-tag {
+  font-size: 9px;
+  font-weight: 800;
+  color: var(--warn);
+  background: rgba(245, 184, 46, 0.18);
+  padding: 1px 5px;
+  border-radius: 999px;
+  letter-spacing: 0.5px;
+}
+
+/* Attendance checklist */
+.attendance-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.attendance-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 4px 12px;
+}
+.attendance-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+}
+.attendance-row:hover { border-color: var(--border); }
+.attendance-row input { accent-color: var(--green); cursor: pointer; }
+.attendance-row.is-unavailable .attendance-name {
+  color: var(--text-mute);
+  text-decoration: line-through;
+  text-decoration-color: var(--text-mute);
+}
+.attendance-name {
+  flex: 1;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ===== Print ===== */

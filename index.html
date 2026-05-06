@@ -56,6 +56,10 @@
       <span class="tab-icon">🏐</span>
       <span class="tab-label">Lineup</span>
     </button>
+    <button class="tab" data-tab="scrimmage" role="tab">
+      <span class="tab-icon">🆚</span>
+      <span class="tab-label">Scrimmage</span>
+    </button>
   </nav>
 
   <main>
@@ -152,6 +156,48 @@
             <ul class="bench-list" id="benchList"></ul>
           </div>
         </div>
+      </section>
+    </section>
+
+    <!-- SCRIMMAGE TAB -->
+    <section class="tab-panel" id="scrimmageTab" role="tabpanel">
+      <section id="scrimmageBuilder">
+        <div class="lineup-controls">
+          <label class="lc-field"><span># Teams</span>
+            <select id="teamCount">
+              <option value="2">2 teams</option>
+              <option value="3">3 teams</option>
+              <option value="4">4 teams</option>
+            </select>
+          </label>
+          <button class="btn btn-primary" id="genTeamsBtn">⚡ Pick teams</button>
+          <button class="btn btn-secondary btn-tiny" id="shuffleTeamsBtn" hidden>🎲 Shuffle</button>
+        </div>
+        <div class="lineup-status" id="scrimmageStatus"></div>
+
+        <div id="scrimmageResult" hidden>
+          <div id="teamGrid" class="team-grid"></div>
+          <div class="scrimmage-summary">
+            <div class="lb-bd-stat">
+              <span class="lb-bd-stat-label">Spread</span>
+              <span class="lb-bd-stat-val" id="teamSpread">—</span>
+            </div>
+            <div class="lb-bd-stat">
+              <span class="lb-bd-stat-label">Players</span>
+              <span class="lb-bd-stat-val" id="teamPlayerCount">—</span>
+            </div>
+          </div>
+        </div>
+
+        <details class="lb-panel" id="attendancePanel" open>
+          <summary>Tonight's attendance <span class="lb-counter" id="attendanceCounter"></span></summary>
+          <div class="lb-panel-body" id="attendanceBody"></div>
+        </details>
+
+        <details class="lb-panel" id="scrimmagePairingsPanel">
+          <summary>Pairings & anti-pairings <span class="lb-counter" id="scrimmagePairingsCounter"></span></summary>
+          <div class="lb-panel-body" id="scrimmagePairingsBody"></div>
+        </details>
       </section>
     </section>
   </main>
