@@ -90,128 +90,71 @@
         <button class="btn btn-secondary" id="resetWeightsBtn">Reset</button>
       </div>
       <div class="weight-list" id="weightList"></div>
-      <div class="mode-card">
-        <h3 class="label-with-help">Lineup Mode <button class="help-btn" data-help="lineup-mode" aria-label="When should I pick which?" type="button">?</button></h3>
-        <label class="radio-row">
-          <input type="radio" name="mode" value="strict" checked>
-          <div>
-            <strong>Strict — Real rotation</strong>
-            <span class="radio-hint">Players cycle through all 6 positions in legal volleyball order. Use for actual games where rotation rules apply.</span>
-          </div>
-        </label>
-        <label class="radio-row">
-          <input type="radio" name="mode" value="loose">
-          <div>
-            <strong>Loose — Best per spot</strong>
-            <span class="radio-hint">Each player pinned to their best-fit position. No rotation cycle. Use for practice, scrimmage, or to see where players shine.</span>
-          </div>
-        </label>
-      </div>
+      <p class="hint">Optimization mode (balanced / best 6 / serve-receive / serving) lives on the Lineup tab.</p>
     </section>
 
     <!-- LINEUP TAB -->
     <section class="tab-panel" id="lineupTab" role="tabpanel">
-      <div class="run-section">
-        <button class="btn btn-primary btn-run" id="runBtn">
-          <span class="run-icon">⚡</span>
-          Generate Lineup
-        </button>
-        <p class="hint" id="runHint">Mark 6+ players available on the Roster tab, then tap Generate.</p>
-      </div>
-
-      <div id="lineupResult" hidden>
-        <div class="rotation-controls">
-          <button class="rot-btn" id="prevRotBtn" aria-label="Previous rotation">←</button>
-          <div class="rot-display">
-            <div class="rot-label label-with-help">
-              Rotation
-              <button class="help-btn" data-help="court-legend" aria-label="What do the colors mean?" type="button">?</button>
-            </div>
-            <div class="rot-num"><span id="rotNum">1</span> <span class="rot-of">/ 6</span></div>
-            <div class="modified-badge" id="modifiedBadge" hidden>edited</div>
-          </div>
-          <button class="rot-btn" id="nextRotBtn" aria-label="Next rotation">→</button>
-        </div>
-        <div class="reset-row" id="resetRow" hidden>
-          <span class="reset-hint">Lineup manually edited</span>
-          <button class="btn btn-secondary btn-tiny" id="resetOptimalBtn">Reset to optimal</button>
-        </div>
-
-        <div class="court-wrapper">
-          <div class="court" id="court">
-            <div class="net">NET</div>
-            <div class="court-line line-attack-top"></div>
-            <div class="court-line line-attack-bottom"></div>
-            <div class="position-zones">
-              <div class="zone" data-pos="4"><span class="zone-label">4</span></div>
-              <div class="zone" data-pos="3"><span class="zone-label">3</span></div>
-              <div class="zone" data-pos="2"><span class="zone-label">2</span></div>
-              <div class="zone" data-pos="5"><span class="zone-label">5</span></div>
-              <div class="zone" data-pos="6"><span class="zone-label">6</span></div>
-              <div class="zone" data-pos="1"><span class="zone-label">1</span></div>
-            </div>
-            <div class="player-layer" id="playerLayer"></div>
-            <div class="serve-arrow" id="serveArrow" hidden>SERVE</div>
-          </div>
-        </div>
-
-        <div class="rotation-strength">
-          <h3 class="label-with-help">Rotation Strength <button class="help-btn" data-help="rotation-strength" aria-label="What do these bars mean?" type="button">?</button></h3>
-          <div class="strength-bars" id="strengthBars"></div>
-        </div>
-
-        <div class="serving-order-card">
-          <h3>Serving Order</h3>
-          <p class="hint">Tap a player to swap them in/out of serving spots.</p>
-          <ol class="serve-list" id="servingOrder"></ol>
-        </div>
-
-        <div class="bench-card" id="benchCard">
-          <div class="bench-card-head">
-            <h3>Bench</h3>
-            <select class="sort-select" id="benchSort" aria-label="Sort bench">
-              <option value="avg-desc">AVG: high → low</option>
-              <option value="avg-asc">AVG: low → high</option>
-              <option value="name-asc">Name: A → Z</option>
-              <option value="name-desc">Name: Z → A</option>
+      <section id="lineupBuilder">
+        <div class="lineup-controls">
+          <label class="lc-field"><span>System</span>
+            <select id="systemSelectLineup">
+              <option value="5-1">5-1</option>
+              <option value="6-2">6-2</option>
             </select>
-          </div>
-          <p class="bench-hint">Drag onto a court player to sub them in.</p>
-          <ul class="bench-list" id="benchList"></ul>
-          <div class="bench-drop-zone" id="benchDropZone">Drop here to send to bench</div>
+          </label>
+          <label class="lc-field"><span>Optimize for</span>
+            <select id="optimizationMode">
+              <option value="balanced">Balanced — all 6 rotations</option>
+              <option value="best6">Best 6 on floor</option>
+              <option value="sr">Best serve-receive</option>
+              <option value="serving">Best serving</option>
+            </select>
+          </label>
+          <button class="btn btn-primary" id="generateBtn">⚡ Generate Lineup</button>
+          <button class="btn btn-secondary btn-tiny" id="clearOverridesBtn" hidden title="Clear all manual pin overrides">Clear pins</button>
         </div>
-      </div>
+        <div class="lineup-status" id="lineupStatus"></div>
+
+        <div id="lineupResult" hidden>
+          <div id="rotationGrid" class="rotation-grid"></div>
+
+          <details class="lb-panel" id="liberoPanel">
+            <summary>Libero config</summary>
+            <div class="lb-panel-body" id="liberoPanelBody"></div>
+          </details>
+
+          <details class="lb-panel" id="subPatternsPanel">
+            <summary>Sub patterns <span class="lb-counter" id="subsCounter"></span></summary>
+            <div class="lb-panel-body" id="subPatternsBody"></div>
+          </details>
+
+          <details class="lb-panel" id="pairingsPanel">
+            <summary>Pairings <span class="lb-counter" id="pairingsCounter"></span></summary>
+            <div class="lb-panel-body" id="pairingsBody"></div>
+          </details>
+
+          <details class="lb-panel" id="lineupBreakdownPanel" open>
+            <summary>Lineup breakdown</summary>
+            <div class="lb-panel-body" id="lineupBreakdown"></div>
+          </details>
+
+          <div class="bench-card lb-bench" id="benchCard">
+            <div class="bench-card-head">
+              <h3>Bench (drag onto a zone to pin)</h3>
+              <select class="sort-select" id="benchSort" aria-label="Sort bench">
+                <option value="avg-desc">AVG: high → low</option>
+                <option value="avg-asc">AVG: low → high</option>
+                <option value="name-asc">Name: A → Z</option>
+                <option value="name-desc">Name: Z → A</option>
+              </select>
+            </div>
+            <ul class="bench-list" id="benchList"></ul>
+          </div>
+        </div>
+      </section>
     </section>
   </main>
-
-  <!-- Swap mode banner -->
-  <div class="swap-banner" id="swapBanner" hidden>
-    <span class="swap-banner-text" id="swapBannerText">Tap a player to swap</span>
-    <button class="swap-banner-cancel" id="swapBannerCancel">Cancel</button>
-  </div>
-
-  <!-- Player breakdown popup -->
-  <div class="modal" id="breakdownModal" hidden>
-    <div class="modal-content breakdown-content">
-      <button class="breakdown-close" id="breakdownClose" aria-label="Close">×</button>
-      <div class="breakdown-header">
-        <div class="breakdown-avatar" id="breakdownAvatar"></div>
-        <div>
-          <h3 class="breakdown-name" id="breakdownName"></h3>
-          <p class="breakdown-position" id="breakdownPosition"></p>
-        </div>
-      </div>
-      <div class="breakdown-section">
-        <h4>Fit at every position</h4>
-        <p class="breakdown-hint">Higher = better fit. The current spot is highlighted.</p>
-        <div class="breakdown-bars" id="breakdownBars"></div>
-      </div>
-      <div class="breakdown-actions">
-        <button class="btn btn-secondary" id="breakdownSubOff">Sub off →</button>
-        <button class="btn btn-primary" id="breakdownSwap">Swap with…</button>
-      </div>
-    </div>
-  </div>
 
   <!-- Help / Info modal -->
   <div class="modal" id="helpModal" hidden>

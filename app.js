@@ -53,9 +53,13 @@ const SKILL_LABELS_SHORT = {
 const SETTER_TEMPO_KEY = 'setterTempo'; // toggleable 7th skill, S-only
 
 const RULESETS = {
-  rec:  { label: 'Rec League',     subsPerSet: 12, liberoMayServe: false, reentry: 'sameSlot', timeoutsPerSet: 2 },
-  ncaa: { label: "NCAA Women's",   subsPerSet: 15, liberoMayServe: true,  reentry: 'sameSlot', timeoutsPerSet: 2 }
+  rec:  { label: 'Rec League',     subsPerSet: 12, liberoMayServe: false, reentry: 'sameSlot', timeoutsPerSet: 2, roleStrict: false },
+  ncaa: { label: "NCAA Women's",   subsPerSet: 15, liberoMayServe: true,  reentry: 'sameSlot', timeoutsPerSet: 2, roleStrict: true  }
 };
+// roleStrict: when false (Rec), any player can fill any role/zone — the
+// optimizer still scores per-role fit, but won't reject a roster that
+// lacks a designated setter or libero, and won't reject pins that violate
+// role caps. NCAA enforces strict 5-1 / 6-2 role composition.
 
 // Per-role skill weights (higher = more important for that role).
 // Used by Block 2's algorithm; declared here so the data model and
@@ -110,15 +114,28 @@ function defaultWeights() {
   return w;
 }
 
+function defaultLineup() {
+  // optimizationMode: 'balanced' | 'best6' | 'sr' | 'serving'
+  // overrides:        { rotationIndex, zone, playerId } — coach-pinned slots
+  // liberoConfig:     { playerId|null, replaces:['MB'|'OPP'|...], servesInRotation: 0..5|null }
+  // subPatterns:      [{ id, out, in, trigger:{rotationIndex,event}, return?: {...} }]
+  // pairings:         [{ a: playerId, b: playerId }] — both must be starters together
+  return {
+    optimizationMode: 'balanced',
+    overrides: [],
+    liberoConfig: { playerId: null, replaces: ['MB'], servesInRotation: null },
+    subPatterns: [],
+    pairings: []
+  };
+}
+
 let S = {
   teamName: TEAM_NAME,
   players: [],
   weights: defaultWeights(),
   settings: defaultSettings(),
-  mode: 'strict',
+  lineup: defaultLineup(),
   result: null,
-  currentRotation: 0,
-  swapMode: null,
   lastEdited: null,
   rosterSort: 'avg-desc',   // 'avg-desc' | 'avg-asc' | 'name-asc' | 'name-desc'
   benchSort: 'avg-desc'
@@ -232,7 +249,13 @@ function save(opts = {}) {
     })),
     weights: S.weights,
     settings: S.settings,
-    mode: S.mode,
+    lineup: {
+      optimizationMode: S.lineup.optimizationMode,
+      overrides: S.lineup.overrides,
+      liberoConfig: S.lineup.liberoConfig,
+      subPatterns: S.lineup.subPatterns,
+      pairings: S.lineup.pairings
+    },
     lastEdited: S.lastEdited,
     rosterSort: S.rosterSort,
     benchSort: S.benchSort
@@ -315,8 +338,18 @@ function applyLoadedState(data) {
       system: (data.settings.system === '6-2' ? '6-2' : '5-1')
     };
   }
-  if (data.mode === 'loose' || data.mode === 'strict') {
-    S.mode = data.mode;
+  if (data.lineup && typeof data.lineup === 'object') {
+    const VALID_MODES = new Set(['balanced', 'best6', 'sr', 'serving']);
+    S.lineup = {
+      ...defaultLineup(),
+      optimizationMode: VALID_MODES.has(data.lineup.optimizationMode) ? data.lineup.optimizationMode : 'balanced',
+      overrides: Array.isArray(data.lineup.overrides) ? data.lineup.overrides : [],
+      liberoConfig: data.lineup.liberoConfig && typeof data.lineup.liberoConfig === 'object'
+        ? { ...defaultLineup().liberoConfig, ...data.lineup.liberoConfig }
+        : defaultLineup().liberoConfig,
+      subPatterns: Array.isArray(data.lineup.subPatterns) ? data.lineup.subPatterns : [],
+      pairings: Array.isArray(data.lineup.pairings) ? data.lineup.pairings : []
+    };
   }
   if (typeof data.lastEdited === 'number') S.lastEdited = data.lastEdited;
   if (SORT_MODES.has(data.rosterSort)) S.rosterSort = data.rosterSort;
@@ -358,7 +391,7 @@ function encodeStateForUrl() {
     })),
     w: SKILLS.map(k => S.weights[k] | 0),
     cfg: S.settings,
-    m: S.mode === 'loose' ? 0 : 1,
+    ln: S.lineup,
     e: S.lastEdited || undefined
   };
   return b64urlEncode(JSON.stringify(compact));
@@ -394,7 +427,7 @@ function readStateFromUrl() {
         return w;
       })(),
       settings: (c.cfg && typeof c.cfg === 'object') ? c.cfg : null,
-      mode: c.m === 0 ? 'loose' : 'strict',
+      lineup: (c.ln && typeof c.ln === 'object') ? c.ln : null,
       lastEdited: typeof c.e === 'number' ? c.e : null
     };
   } catch (e) { return null; }
@@ -439,48 +472,33 @@ const HELP = {
         ['Blocking', 'Reading the setter, timing, and getting hands over the net.'],
         ['Setting', 'Running offense as the setter — placing the second touch for a hitter.']
       ] },
-      { callout: 'Setters can also be rated on tempo (toggle in the topbar) — how well they run quick / slide / back sets.' },
+      { callout: 'Setters can also be rated on tempo (toggle in the topbar). Tempo is the breadth of their playbook — 1 means they only run high-outside sets, 10 means they confidently run quick attacks, slides, and back sets at game speed. It does NOT measure how good their setting is overall — that\'s the Setting skill above.' },
       { callout: 'Tip: rate honestly relative to your team. A 7 means "above average for our group," not "above average in the league."' }
     ]
   },
-  'lineup-mode': {
-    title: 'Strict vs. Loose mode',
+  'optimization-mode': {
+    title: 'Optimization modes',
     body: [
-      { h: 'Strict — Real volleyball rotation' },
-      { p: 'The same 6 players cycle through all 6 court positions over the set, in legal volleyball rotation order. The optimizer picks an arrangement that:' },
+      { p: 'The lineup builder picks the best legal arrangement for the chosen system. The mode controls what "best" means:' },
       { dl: [
-        ['Avoids weak rotations', 'Spreads strong players across the cycle so no rotation is mostly weak players.'],
-        ['Honors position 2 setter', 'Whoever rotates into position 2 is the setter for that rotation, so setting skill is weighted there.'],
-        ['Optimizes serving order', 'The strongest server starts at position 1.']
+        ['Balanced', 'Maximin — protects against weak rotations. Use this for full sets where every rotation matters.'],
+        ['Best 6 on floor', 'Optimizes only the starting rotation. Use when you want the strongest opening 6 and care less about rotations 2-6.'],
+        ['Best serve-receive', 'Upweights serve-receive contributions. Use against a tough server.'],
+        ['Best serving', 'Upweights serving + blocking. Use when you need to break serve.']
       ] },
-      { callout: 'Use this for actual games where rotation rules apply.' },
-      { h: 'Loose — Best player at each spot' },
-      { p: 'Each player is pinned to the position they’re best suited for, ignoring rotation. The setter stays at setter, the strongest hitter stays front-row, etc.' },
-      { callout: 'Use this for practice, scrimmage, or to see where each player’s strengths lie when freed from rotation rules.' }
+      { callout: 'Pin a player to a specific zone by dragging them onto it. The next regenerate respects the pin.' }
     ]
   },
   'rotation-strength': {
     title: 'Rotation strength bars',
     body: [
-      { p: 'Each bar represents one of the 6 rotations during the set. The height is the total skill on the court for that rotation — taller bars are stronger rotations.' },
+      { p: 'In the lineup breakdown, the bars show per-rotation total skill on the floor — the maximin optimizer prefers lineups where the worst bar is as tall as possible.' },
       { dl: [
-        ['Green bars', 'Strong rotations.'],
-        ['Yellow bars', 'Weakest rotations — your team is most vulnerable here. Keep an eye on these in the game.'],
-        ['Active bar', 'The rotation currently shown on the court (filled darker).']
+        ['Worst', 'The lowest-strength rotation — your team is most vulnerable here.'],
+        ['Best', 'The strongest rotation.'],
+        ['Average', 'Mean strength across all 6 rotations.']
       ] },
-      { callout: 'Tap any bar to jump to that rotation on the court.' }
-    ]
-  },
-  'court-legend': {
-    title: 'Court legend',
-    body: [
-      { p: 'A few visual cues on the court diagram:' },
-      { dl: [
-        ['Yellow ring', 'The server for this rotation (position 1).'],
-        ['Green-tint background', 'The setter for this rotation (position 2). Whoever rotates here sets.'],
-        ['Position numbers', '4-3-2 is the front row (left to right). 5-6-1 is the back row.']
-      ] },
-      { p: 'Tap any player to see their fit at every position. Drag a player onto another to swap them. Drag onto the bench drop zone to sub them off.' }
+      { callout: 'Switch optimization modes to see how the algorithm trades off worst-case vs. best-case strength.' }
     ]
   }
 };
@@ -668,7 +686,10 @@ function playerFitForRole(player, role, settings) {
   return fit;
 }
 
-function validRolesForPlayer(player) {
+function validRolesForPlayer(player, ruleset) {
+  // Rec League: any player can fill any role. The role still affects
+  // scoring (via ROLE_SKILL_WEIGHTS) but doesn't gate eligibility.
+  if (ruleset && ruleset.roleStrict === false) return ROLES.slice();
   const out = [];
   const pri = player.positions && player.positions[0];
   const sec = player.positions && player.positions[1];
@@ -684,49 +705,83 @@ function playerSkillRaw(player) {
   return s / SKILLS.length;
 }
 
-// Back-compat shim for the breakdown popup at line ~1200. The popup shows
-// per-zone scores; in the role-locked model the score doesn't vary by zone,
-// so we return the player's primary-role fit for any pos. Block 3 rebuilds
-// the popup to show role fits / per-rotation contributions instead.
-function playerScoreAtPosition(player, _pos) {
-  if (!player) return 0;
-  const settings = (S && S.settings) || defaultSettings();
-  const role = (player.positions && player.positions[0]) || 'OH';
-  return playerFitForRole(player, role, settings);
-}
-
 /* chooseStarters: backtracking with primary-preference + best-case pruning.
    Returns { starters: { OH:[..], MB:[..], S:[..], OPP:[..], L:[..], DS:[] },
-             validation: null | reason-string }. */
-function chooseStarters(roster, system, mode, settings) {
+             validation: null | reason-string }.
+   forced: optional [{ player, role }] of players that MUST be starters. The
+   role must be a valid role for the player (else returned as a validation
+   failure). */
+function chooseStarters(roster, system, mode, settings, forced, ruleset, pairings) {
   const reqs = SYSTEM_REQUIREMENTS[system];
   if (!reqs) return { starters: null, validation: `Unknown system: ${system}` };
+  const relaxed = !!(ruleset && ruleset.roleStrict === false);
 
-  // Quick coverage check + clearer error messages.
+  // Coverage check — strict only. Rec accepts any roster shape and lets
+  // role-based scoring decide who fills each slot.
   const counts = { OH: 0, MB: 0, S: 0, OPP: 0, L: 0, DS: 0 };
   for (const p of roster) {
-    for (const r of validRolesForPlayer(p)) counts[r] = (counts[r] || 0) + 1;
+    for (const r of validRolesForPlayer(p, ruleset)) counts[r] = (counts[r] || 0) + 1;
   }
-  for (const role of Object.keys(reqs)) {
-    const need = reqs[role];
-    if (need > 0 && (counts[role] || 0) < need) {
-      const label = ROLE_LABELS[role].toLowerCase();
-      return { starters: null, validation: `Need ${need} ${label}${need > 1 ? 's' : ''} for ${system} system, found ${counts[role] || 0}.` };
+  if (!relaxed) {
+    for (const role of Object.keys(reqs)) {
+      const need = reqs[role];
+      if (need > 0 && (counts[role] || 0) < need) {
+        const label = ROLE_LABELS[role].toLowerCase();
+        return { starters: null, validation: `Need ${need} ${label}${need > 1 ? 's' : ''} for ${system} system, found ${counts[role] || 0}.` };
+      }
     }
   }
 
-  // Slots to fill (one entry per slot, repeated for roles needing multiple).
+  // Validate forced starters. In strict mode, reject pins that violate role
+  // caps; in Rec, reassign each forced player to whichever system-required
+  // role they fit best (so pinning a DS in a 5-1 doesn't blow up).
+  const forcedByRole = {};
+  const forcedIds = new Set();
+  if (forced && forced.length) {
+    for (const f of forced) {
+      if (!f || !f.player || !f.role) continue;
+      if (forcedIds.has(f.player.id)) continue;
+
+      let assignedRole = f.role;
+      if (relaxed) {
+        // Pick the still-needed COURT role this player fits best. Libero is
+        // excluded — pins live on numbered zones (1-6) and the libero swap
+        // is handled separately, so a pinned player has to fill a 6-on-floor
+        // slot or the arrangement constraint can't be satisfied.
+        const openRoles = Object.keys(reqs)
+          .filter(r => r !== 'L' && reqs[r] > 0 && ((forcedByRole[r] || []).length < reqs[r]))
+          .map(r => ({ role: r, fit: playerFitForRole(f.player, r, settings) }))
+          .sort((a, b) => b.fit - a.fit);
+        if (openRoles.length === 0) continue; // every court slot already pinned
+        assignedRole = openRoles[0].role;
+      } else {
+        if (!validRolesForPlayer(f.player, ruleset).includes(f.role)) {
+          return { starters: null, validation: `${f.player.name || 'Player'} can't play ${f.role}; pin not satisfiable.` };
+        }
+        const cap = reqs[f.role] || 0;
+        const already = (forcedByRole[f.role] || []).length;
+        if (already >= cap) {
+          return { starters: null, validation: `Too many pinned ${f.role}s for ${system}; system only needs ${cap}.` };
+        }
+      }
+
+      (forcedByRole[assignedRole] = forcedByRole[assignedRole] || []).push(f.player);
+      forcedIds.add(f.player.id);
+    }
+  }
+
+  // Slots remaining after forced placements.
   const rolesToFill = [];
   for (const role of Object.keys(reqs)) {
-    for (let i = 0; i < reqs[role]; i++) rolesToFill.push(role);
+    const remaining = reqs[role] - ((forcedByRole[role] || []).length);
+    for (let i = 0; i < remaining; i++) rolesToFill.push(role);
   }
-  rolesToFill.sort((a, b) => (counts[a] || 0) - (counts[b] || 0)); // scarcest first
+  rolesToFill.sort((a, b) => (counts[a] || 0) - (counts[b] || 0));
 
-  // Per-role candidate lists, sorted: primaries first, then by descending fit.
   const candidatesByRole = {};
   for (const role of new Set(rolesToFill)) {
     candidatesByRole[role] = roster
-      .filter(p => validRolesForPlayer(p).includes(role))
+      .filter(p => !forcedIds.has(p.id) && validRolesForPlayer(p, ruleset).includes(role))
       .map(p => ({
         p,
         fit: playerFitForRole(p, role, settings),
@@ -736,23 +791,45 @@ function chooseStarters(roster, system, mode, settings) {
   }
 
   let best = null;
-  const usedIds = new Set();
+  const usedIds = new Set(forcedIds);
   const assignments = [];
+
+  // Seed assignments with forced starters so they appear in the result.
+  Object.keys(forcedByRole).forEach(role => {
+    forcedByRole[role].forEach(player => assignments.push({ role, player, forced: true }));
+  });
+  const forcedScore = assignments.reduce((s, a) => s + playerFitForRole(a.player, a.role, settings), 0);
+
+  // Filter pairings to ones whose players exist in the roster (defensive).
+  const rosterIds = new Set(roster.map(p => p.id));
+  const activePairings = (pairings || []).filter(pr =>
+    pr && pr.a && pr.b && pr.a !== pr.b && rosterIds.has(pr.a) && rosterIds.has(pr.b)
+  );
+
+  function pairingsSatisfied(currentIds) {
+    for (const pr of activePairings) {
+      if (currentIds.has(pr.a) !== currentIds.has(pr.b)) return false;
+    }
+    return true;
+  }
 
   function recurse(idx, runningScore) {
     if (idx === rolesToFill.length) {
+      if (activePairings.length > 0) {
+        const ids = new Set(assignments.map(a => a.player.id));
+        if (!pairingsSatisfied(ids)) return;
+      }
       if (!best || runningScore > best.score) {
         best = { score: runningScore, assignments: assignments.map(a => ({ ...a })) };
       }
       return;
     }
-    // Best-case prune: optimistic upper bound.
     if (best) {
       let upper = runningScore;
       for (let j = idx; j < rolesToFill.length; j++) {
         const cands = candidatesByRole[rolesToFill[j]];
         const top = cands.find(c => !usedIds.has(c.p.id));
-        if (top) upper += top.fit; else return; // no candidate -> dead branch
+        if (top) upper += top.fit; else return;
       }
       if (upper <= best.score) return;
     }
@@ -767,13 +844,38 @@ function chooseStarters(roster, system, mode, settings) {
       usedIds.delete(c.p.id);
     }
   }
-  recurse(0, 0);
+  recurse(0, forcedScore);
 
-  if (!best) return { starters: null, validation: 'Could not find a valid starter set.' };
+  // Pairings might have over-constrained the search. Retry once without
+  // pairings and surface the gap in validation rather than failing hard.
+  let pairingsSkipped = false;
+  if (!best && activePairings.length > 0) {
+    pairingsSkipped = true;
+    const reset = assignments.length - Object.keys(forcedByRole).reduce((n, k) => n + (forcedByRole[k] || []).length, 0);
+    // Drop any non-forced assignments left over from the failed run.
+    while (assignments.length > Object.keys(forcedByRole).reduce((n, k) => n + (forcedByRole[k] || []).length, 0)) {
+      assignments.pop();
+    }
+    activePairings.length = 0; // disable for the fallback
+    recurse(0, forcedScore);
+  }
+
+  if (!best) {
+    if (rolesToFill.length === 0) {
+      // All slots forced; just return the forced starters.
+      const starters = { OH: [], MB: [], S: [], OPP: [], L: [], DS: [] };
+      assignments.forEach(a => starters[a.role].push(a.player));
+      return { starters, validation: null };
+    }
+    return { starters: null, validation: 'Could not find a valid starter set.' };
+  }
 
   const starters = { OH: [], MB: [], S: [], OPP: [], L: [], DS: [] };
   for (const a of best.assignments) starters[a.role].push(a.player);
-  return { starters, validation: null };
+  return {
+    starters,
+    validation: pairingsSkipped ? "Couldn't keep all pairings together; constraint was relaxed." : null
+  };
 }
 
 /* Compute 6 rotations from a starting zone-1..6 order.
@@ -975,21 +1077,31 @@ const SUB_PATTERN_TEMPLATES = {
   }
 };
 
-/* generateLineup: public entry. Returns a result object that combines the new
-   plan-shape fields (starters, arrangement, libero, score, perRotationScores,
-   validation) with a back-compat layer for the existing UI (mode, starting6,
-   rotations, rotationScores, bench, benchPool, servingOrder,
-   algorithmStarting6, modified). Block 3 drops the back-compat layer. */
+/* arrangementSatisfiesOverrides: in rotation r, zone z is occupied by the
+   player at startOrder[(z-1+r) mod 6]. An override pinning a player at
+   (rotIdx, zone) maps to the constraint startOrder[startIdx] === pinnedId
+   where startIdx = (zone-1+rotIdx) mod 6. */
+function arrangementSatisfiesOverrides(arrangement, overrides) {
+  if (!overrides || overrides.length === 0) return true;
+  for (const ov of overrides) {
+    const startIdx = ((ov.zone - 1 + ov.rotationIndex) % 6 + 6) % 6;
+    const placed = arrangement.startOrder[startIdx];
+    if (!placed || placed.id !== ov.playerId) return false;
+  }
+  return true;
+}
+
+/* generateLineup: public entry. Returns the new-shape result that the lineup
+   builder UI consumes directly (starters, arrangement, libero, score,
+   perRotationScores, validation). Block 2's back-compat layer is gone. */
 function generateLineup(state) {
   state = state || S;
   _fitCache = new Map();
 
   const settings = state.settings || defaultSettings();
+  const lineupCfg = state.lineup || defaultLineup();
   const system = settings.system === '6-2' ? '6-2' : '5-1';
-  // Map the legacy strict/loose toggle to the new mode space until Block 3
-  // adds the proper optimization-mode dropdown.
-  const mode = state.optimizationMode
-    || (state.mode === 'loose' ? 'best6' : 'balanced');
+  const mode = lineupCfg.optimizationMode || 'balanced';
   const ruleset = RULESETS[settings.ruleset] || RULESETS.rec;
 
   const roster = state.players.filter(p => p.available && (p.name || '').trim());
@@ -997,101 +1109,62 @@ function generateLineup(state) {
     return { error: `Need at least 7 available players (you have ${roster.length}).`, starters: null, validation: 'roster-size' };
   }
 
-  const { starters, validation } = chooseStarters(roster, system, mode, settings);
+  // Derive forced starters from overrides: each unique pinned player must be
+  // a starter in their primary role.
+  const overrides = lineupCfg.overrides || [];
+  const forcedMap = new Map();
+  for (const ov of overrides) {
+    if (forcedMap.has(ov.playerId)) continue;
+    const player = state.players.find(p => p.id === ov.playerId);
+    if (!player) continue;
+    forcedMap.set(ov.playerId, { player, role: (player.positions && player.positions[0]) || 'OH' });
+  }
+  const forced = Array.from(forcedMap.values());
+
+  const pairings = lineupCfg.pairings || [];
+  const { starters, validation: starterValidation } = chooseStarters(roster, system, mode, settings, forced, ruleset, pairings);
   if (!starters) {
-    return { error: validation, starters: null, validation };
+    return { error: starterValidation, starters: null, validation: starterValidation };
   }
 
-  const liberoPlayer = starters.L[0] || null;
+  // Libero defaults to the first L starter; coach can override the player + replaces in the panel.
+  const liberoPlayer = lineupCfg.liberoConfig && lineupCfg.liberoConfig.playerId
+    ? state.players.find(p => p.id === lineupCfg.liberoConfig.playerId) || starters.L[0] || null
+    : starters.L[0] || null;
   const libero = liberoPlayer ? {
     player: liberoPlayer,
-    replaces: ['MB'],
-    servesInRotation: null
+    replaces: (lineupCfg.liberoConfig && lineupCfg.liberoConfig.replaces) || ['MB'],
+    servesInRotation: lineupCfg.liberoConfig ? lineupCfg.liberoConfig.servesInRotation : null
   } : null;
 
   const arrangements = arrangeRotation(starters, system);
   if (arrangements.length === 0) {
     return { error: `No legal arrangement for ${system}`, starters: null, validation: 'arrangement-empty' };
   }
-  const patterns = state.subPatterns || [];
+
+  const patterns = lineupCfg.subPatterns || [];
+  const valid = arrangements.filter(a => arrangementSatisfiesOverrides(a, overrides));
+  const pool = valid.length > 0 ? valid : arrangements;
+  const overridesIgnored = valid.length === 0 && overrides.length > 0;
 
   let best = null;
-  for (const arr of arrangements) {
+  for (const arr of pool) {
     const { score, perRotationScores } = scoreLineup(arr, mode, libero, patterns, ruleset, settings);
     if (!best || score > best.score) {
       best = { arrangement: arr, score, perRotationScores };
     }
   }
 
-  // --- Back-compat translation for the existing UI ---
-  const startOrder = best.arrangement.startOrder;
-  const starting6 = startOrder.slice();
-  const rotations = best.arrangement.rotations.map(rot => ({
-    1: rot.backRow[2],
-    2: rot.frontRow[2],
-    3: rot.frontRow[1],
-    4: rot.frontRow[0],
-    5: rot.backRow[0],
-    6: rot.backRow[1]
-  }));
-
-  const result = {
-    // New shape
+  return {
     starters,
     arrangement: best.arrangement,
     libero,
     score: best.score,
     perRotationScores: best.perRotationScores,
-    validation: null,
-    // Back-compat
-    mode: 'strict',
-    starting6,
-    rotations,
-    rotationScores: best.perRotationScores,
-    benchPool: roster.slice(),
-    algorithmStarting6: starting6.slice(),
-    modified: false
+    validation: overridesIgnored
+      ? "Couldn't satisfy all pins; pins were ignored."
+      : (starterValidation || null)
   };
-  rebuildBenchAndServingOrder(result);
-  return result;
-}
-
-function rebuildBenchAndServingOrder(result) {
-  const settings = (S && S.settings) || defaultSettings();
-  const startingIds = new Set(result.starting6.map(p => p.id));
-  result.bench = result.benchPool
-    .filter(p => !startingIds.has(p.id))
-    .map(p => {
-      const role = (p.positions && p.positions[0]) || 'OH';
-      return { player: p, value: playerFitForRole(p, role, settings), skill: playerSkillRaw(p) };
-    })
-    .sort((a, b) => b.value - a.value);
-  result.servingOrder = result.starting6.slice();
-}
-
-/* rebuildDerivedFields: kept for the existing swap/sub UI. Re-derives
-   rotations + scores from result.starting6 (treated as zone-1..6 starting
-   order) using the new role-aware scoring. */
-function rebuildDerivedFields(result) {
-  if (!result || !result.starting6) return;
-  const settings = (S && S.settings) || defaultSettings();
-  const rotations = [];
-  const rotationScores = [];
-  for (let r = 0; r < 6; r++) {
-    const at = z => result.starting6[((z - 1 + r) % 6 + 6) % 6];
-    const rot = { 1: at(1), 2: at(2), 3: at(3), 4: at(4), 5: at(5), 6: at(6) };
-    rotations.push(rot);
-    let total = 0;
-    for (let pos = 1; pos <= 6; pos++) {
-      const p = rot[pos];
-      const role = (p && p.positions && p.positions[0]) || 'OH';
-      total += playerFitForRole(p, role, settings);
-    }
-    rotationScores.push(total);
-  }
-  result.rotations = rotations;
-  result.rotationScores = rotationScores;
-  rebuildBenchAndServingOrder(result);
 }
 
 // Expose pure functions for Block 6 page.evaluate tests.
@@ -1138,195 +1211,11 @@ function loadDevRoster() {
 }
 if (typeof window !== 'undefined') window.loadDevRoster = loadDevRoster;
 
-/* ===== Swap / Sub-In Logic ===== */
-function arraysSamePlayers(a, b) {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i].id !== b[i].id) return false;
-  return true;
-}
-
-function markModifiedIfChanged() {
-  if (!S.result) return;
-  S.result.modified = !arraysSamePlayers(S.result.starting6, S.result.algorithmStarting6);
-}
-
-function swapTwoOnCourt(idxA, idxB) {
-  const r = S.result;
-  if (idxA === idxB) return;
-  const tmp = r.starting6[idxA];
-  r.starting6[idxA] = r.starting6[idxB];
-  r.starting6[idxB] = tmp;
-  rebuildDerivedFields(r);
-  markModifiedIfChanged();
-}
-
-function subInBenchPlayer(benchPlayerId, courtIdx) {
-  const r = S.result;
-  const benchPlayer = r.benchPool.find(p => p.id === benchPlayerId);
-  if (!benchPlayer) return;
-  // benchPlayer is already in benchPool; just swap references in starting6.
-  // (benchPool stays the same; rebuildDerivedFields recomputes who's bench.)
-  r.starting6[courtIdx] = benchPlayer;
-  rebuildDerivedFields(r);
-  markModifiedIfChanged();
-}
-
-function startingIdxOfPlayer(playerId) {
-  return S.result.starting6.findIndex(p => p.id === playerId);
-}
-
-function startingIdxAtPosition(pos, rotIdx) {
-  // Find which starting6 index corresponds to a player currently at `pos` in rotation `rotIdx`.
-  // Rotation cycle: a player at starting position S is at currentPos((S-1 - r + 6) % 6) + 1.
-  // So given a current position P, starting position S = ((P - 1 + r) % 6) + 1.
-  const startPos = ((pos - 1 + rotIdx) % 6) + 1;
-  return startPos - 1;
-}
-
-/* ===== Swap mode ===== */
-function enterSwapMode(kind, idx) {
-  S.swapMode = { kind, idx };
-  document.body.classList.add('swap-mode');
-  // Mark the source player on court
-  const sourcePlayer = kind === 'court'
-    ? S.result.starting6[idx]
-    : S.result.benchPool.find(p => p.id === idx);
-  $$('.player-circle').forEach(c => c.classList.remove('swap-source'));
-  if (kind === 'court' && sourcePlayer) {
-    const circle = document.querySelector(`.player-circle[data-player-id="${sourcePlayer.id}"]`);
-    if (circle) circle.classList.add('swap-source');
-  }
-  const banner = $('#swapBanner');
-  const text = $('#swapBannerText');
-  text.textContent = kind === 'court'
-    ? `Tap a different player to swap with ${sourcePlayer?.name?.split(' ')[0] || 'them'}`
-    : `Tap a court player to sub in ${sourcePlayer?.name?.split(' ')[0] || 'them'}`;
-  banner.hidden = false;
-}
-
-function exitSwapMode() {
-  S.swapMode = null;
-  document.body.classList.remove('swap-mode');
-  $$('.player-circle').forEach(c => c.classList.remove('swap-source'));
-  $('#swapBanner').hidden = true;
-}
-
-function handleCourtPlayerTap(playerId) {
-  if (!S.result) return;
-  if (S.swapMode) {
-    const courtIdx = startingIdxOfPlayer(playerId);
-    if (S.swapMode.kind === 'court') {
-      if (S.swapMode.idx === courtIdx) {
-        // Tapped the source again — cancel
-        exitSwapMode();
-        return;
-      }
-      swapTwoOnCourt(S.swapMode.idx, courtIdx);
-      exitSwapMode();
-      renderLineup();
-      toast('Swapped.');
-    } else if (S.swapMode.kind === 'bench') {
-      subInBenchPlayer(S.swapMode.idx, courtIdx);  // idx is benchPlayerId for bench mode
-      exitSwapMode();
-      renderLineup();
-      toast('Subbed in.');
-    }
-    return;
-  }
-  // No swap mode — open breakdown
-  openBreakdown(playerId);
-}
-
-/* ===== Breakdown popup ===== */
-function openBreakdown(playerId) {
-  if (!S.result) return;
-  const courtIdx = startingIdxOfPlayer(playerId);
-  if (courtIdx < 0) return;
-  const player = S.result.starting6[courtIdx];
-  const rotIdx = S.result.mode === 'strict' ? S.currentRotation : 0;
-  const currentPos = ((courtIdx - rotIdx + 6) % 6) + 1;
-
-  // Compute score at all 6 positions
-  const scores = [];
-  for (let p = 1; p <= 6; p++) {
-    scores.push({ pos: p, score: playerScoreAtPosition(player, p) });
-  }
-  const max = Math.max(...scores.map(s => s.score));
-  const bestPos = scores.find(s => s.score === max).pos;
-
-  // Avatar = first letter
-  const avatar = $('#breakdownAvatar');
-  avatar.textContent = (player.name || '?').trim().charAt(0).toUpperCase();
-  $('#breakdownName').textContent = player.name || '?';
-  $('#breakdownPosition').textContent = `Currently at ${POSITION_NAMES[currentPos]} (pos ${currentPos})`;
-
-  // Bars
-  const bars = $('#breakdownBars');
-  bars.replaceChildren();
-  for (let p = 1; p <= 6; p++) {
-    const s = scores.find(x => x.pos === p);
-    const cls = ['bd-bar-row'];
-    if (p === currentPos) cls.push('is-current');
-    if (p === bestPos) cls.push('is-best');
-    const widthPct = (s.score / max) * 100;
-    const label = el('span', { cls: 'bd-bar-label', text: `${POSITION_NAMES[p]} (${p})` });
-    const fill = el('div', { cls: 'bd-bar-fill' });
-    fill.style.width = widthPct.toFixed(1) + '%';
-    const track = el('div', { cls: 'bd-bar-track' }, [fill]);
-    const value = el('span', { cls: 'bd-bar-value', text: s.score.toFixed(0) });
-    bars.appendChild(el('div', { cls: cls.join(' ') }, [label, track, value]));
-  }
-
-  // Stash player id on the modal so action buttons know who
-  $('#breakdownModal').dataset.playerId = playerId;
-  $('#breakdownModal').hidden = false;
-}
-
-function closeBreakdown() {
-  $('#breakdownModal').hidden = true;
-}
-
-function breakdownStartSwap() {
-  const playerId = $('#breakdownModal').dataset.playerId;
-  const courtIdx = startingIdxOfPlayer(playerId);
-  if (courtIdx < 0) return;
-  closeBreakdown();
-  enterSwapMode('court', courtIdx);
-}
-
-function breakdownSubOff() {
-  // Remove this player; bring in the highest-ranked bench player.
-  const playerId = $('#breakdownModal').dataset.playerId;
-  const courtIdx = startingIdxOfPlayer(playerId);
-  if (courtIdx < 0) return;
-  if (!S.result.bench.length) {
-    toast('No bench players available.');
-    return;
-  }
-  const incoming = S.result.bench[0].player;
-  S.result.starting6[courtIdx] = incoming;
-  rebuildDerivedFields(S.result);
-  markModifiedIfChanged();
-  closeBreakdown();
-  renderLineup();
-  toast(`${incoming.name?.split(' ')[0] || 'Sub'} subbed in.`);
-}
-
-function resetToOptimal() {
-  if (!S.result) return;
-  S.result.starting6 = S.result.algorithmStarting6.slice();
-  rebuildDerivedFields(S.result);
-  S.result.modified = false;
-  renderLineup();
-  toast('Reset to optimal lineup.');
-}
-
 /* ===== Drag & Drop ===== */
 let dragState = null;
 
 function onDragStart(opts, e) {
-  // opts: { kind: 'court'|'bench', playerId, courtIdx? }
-  if (S.swapMode) return;            // swap mode pre-empts drag
+  // opts: { kind: 'court'|'bench', playerId, rotIdx?, zone? }
   if (e.button != null && e.button !== 0) return;  // left click only
 
   // Don't start a drag if user pressed on a button inside the source
@@ -1389,15 +1278,13 @@ function onDragEnd(e) {
 function makeGhost(state) {
   const ghost = document.createElement('div');
   ghost.className = 'drag-ghost';
-  let player;
-  if (state.kind === 'court') {
-    player = S.result.starting6.find(p => p.id === state.playerId);
-  } else {
-    player = S.result.benchPool.find(p => p.id === state.playerId);
-  }
+  const player = S.players.find(p => p.id === state.playerId);
   if (!player) return ghost;
   const firstName = (player.name || '?').split(' ')[0];
-  ghost.appendChild(el('span', { cls: 'pname', text: firstName }));
+  const role = (player.positions && player.positions[0]) || '';
+  ghost.classList.add(`rot-chip-${role || 'OH'}`);
+  ghost.appendChild(el('span', { cls: 'rot-chip-name', text: firstName }));
+  ghost.appendChild(el('span', { cls: 'rot-chip-role', text: role }));
   return ghost;
 }
 
@@ -1408,19 +1295,22 @@ function moveGhost(ghost, x, y) {
 }
 
 function findDropTarget(x, y) {
-  // Returns: { kind: 'court', courtIdx } | { kind: 'bench' } | null
+  // Returns: { kind: 'zone', rotIdx, zone, el } | { kind: 'bench', el } | null
   const els = document.elementsFromPoint(x, y);
   for (const e of els) {
-    if (e.classList?.contains('player-circle')) {
-      const playerId = e.dataset.playerId;
-      const idx = startingIdxOfPlayer(playerId);
-      if (idx >= 0) return { kind: 'court', courtIdx: idx, el: e };
+    const zoneEl = e.classList?.contains('rot-zone') ? e : e.closest && e.closest('.rot-zone');
+    if (zoneEl) {
+      const rotIdx = Number(zoneEl.dataset.rotIdx);
+      const zone = Number(zoneEl.dataset.zone);
+      if (!Number.isNaN(rotIdx) && !Number.isNaN(zone)) {
+        return { kind: 'zone', rotIdx, zone, el: zoneEl };
+      }
     }
-    if (e.id === 'benchDropZone' || e.id === 'benchCard' || e.id === 'benchList' || e.classList?.contains('bench-list')) {
-      return { kind: 'bench', el: document.getElementById('benchDropZone') };
+    if (e.id === 'benchCard' || e.id === 'benchList' || e.classList?.contains('bench-list')) {
+      return { kind: 'bench', el: document.getElementById('benchCard') };
     }
     if (e.tagName === 'LI' && e.parentElement?.id === 'benchList') {
-      return { kind: 'bench', el: document.getElementById('benchDropZone') };
+      return { kind: 'bench', el: document.getElementById('benchCard') };
     }
   }
   return null;
@@ -1433,8 +1323,9 @@ function updateDropHighlight(x, y, ds) {
     lastHighlight.classList.remove('drop-target-active');
   }
   if (target?.el) {
-    // Don't highlight if dropping there is a no-op
-    if (ds.kind === 'court' && target.kind === 'court' && target.courtIdx === ds.courtIdx) {
+    // Don't highlight no-ops.
+    if (ds.kind === 'court' && target.kind === 'zone'
+        && ds.rotIdx === target.rotIdx && ds.zone === target.zone) {
       lastHighlight = null;
       return;
     }
@@ -1456,51 +1347,72 @@ function clearDropHighlight() {
 function performDrop(source, target) {
   if (!S.result) return;
 
-  // court → court: swap
-  if (source.kind === 'court' && target.kind === 'court') {
-    if (source.courtIdx === target.courtIdx) return;
-    swapTwoOnCourt(source.courtIdx, target.courtIdx);
-    renderLineup();
-    toast('Swapped.');
+  // bench → zone: pin player at this rotation+zone
+  if (source.kind === 'bench' && target.kind === 'zone') {
+    applyManualOverride(target.rotIdx, target.zone, source.playerId);
     return;
   }
-  // bench → court: sub in
-  if (source.kind === 'bench' && target.kind === 'court') {
-    subInBenchPlayer(source.playerId, target.courtIdx);
-    renderLineup();
-    toast('Subbed in.');
+  // court → zone: pin the dragged player at the new zone (creates an override)
+  if (source.kind === 'court' && target.kind === 'zone') {
+    if (source.rotIdx === target.rotIdx && source.zone === target.zone) return;
+    applyManualOverride(target.rotIdx, target.zone, source.playerId);
     return;
   }
-  // court → bench: send to bench, best bench auto-replaces
+  // court → bench: drop the override at this slot (releases the pin)
   if (source.kind === 'court' && target.kind === 'bench') {
-    if (!S.result.bench.length) {
-      toast('No bench player available.');
-      return;
-    }
-    const incoming = S.result.bench[0].player;
-    S.result.starting6[source.courtIdx] = incoming;
-    rebuildDerivedFields(S.result);
-    markModifiedIfChanged();
-    renderLineup();
-    toast(`${incoming.name?.split(' ')[0] || 'Sub'} subbed in.`);
+    removeOverrideAt(source.rotIdx, source.zone);
     return;
   }
-  // bench → bench: no-op
+}
+
+/* applyManualOverride: pin a player at a specific rotation+zone. The next
+   regenerate will respect the pin (so long as it's still legal). */
+function applyManualOverride(rotIdx, zone, playerId) {
+  const ovs = S.lineup.overrides;
+  // Replace any existing override at the same slot.
+  for (let i = ovs.length - 1; i >= 0; i--) {
+    if (ovs[i].rotationIndex === rotIdx && ovs[i].zone === zone) ovs.splice(i, 1);
+  }
+  ovs.push({ rotationIndex: rotIdx, zone, playerId });
+  save();
+  scheduleRegen();
+  toast('Pinned. Regenerating…');
+}
+
+function removeOverrideAt(rotIdx, zone) {
+  const ovs = S.lineup.overrides;
+  let removed = false;
+  for (let i = ovs.length - 1; i >= 0; i--) {
+    if (ovs[i].rotationIndex === rotIdx && ovs[i].zone === zone) {
+      ovs.splice(i, 1);
+      removed = true;
+    }
+  }
+  if (removed) {
+    save();
+    scheduleRegen();
+    toast('Pin removed.');
+  }
 }
 
 /* ===== Roster Render ===== */
 function renderRoster() {
   const list = $('#playerList');
   list.replaceChildren();
-  const sorted = sortByMode(
-    S.players,
-    S.rosterSort,
-    p => p.name,
-    p => playerSkillRaw(p)
-  );
+  // Split named from unnamed: unnamed players keep insertion order at the
+  // bottom of the list so a freshly-tapped "+ Add Player" stays adjacent
+  // to its target — the new card sits right above the Add button instead
+  // of jumping to the AVG-sorted top.
+  const named = S.players.filter(p => (p.name || '').trim());
+  const unnamed = S.players.filter(p => !(p.name || '').trim());
+  const sorted = sortByMode(named, S.rosterSort, p => p.name, p => playerSkillRaw(p));
   sorted.forEach(p => list.appendChild(buildPlayerCard(p)));
+  unnamed.forEach(p => list.appendChild(buildPlayerCard(p)));
   $('#rosterEmpty').hidden = S.players.length > 0;
   updateCounts();
+  // If there's an active lineup, refresh the bench so newly-added /
+  // newly-available players appear without waiting for a regenerate.
+  if (S.result && !S.result.error) renderBench();
 }
 
 function buildPlayerCard(p) {
@@ -1613,8 +1525,10 @@ function buildRosterFields(p) {
   priSel.addEventListener('change', e => {
     p.positions = [e.target.value, p.positions?.[1] || null];
     save();
-    // Re-render the card so the setter-tempo row appears/disappears.
-    renderRoster();
+    // In-place: toggle the setter-tempo row on THIS card only so the
+    // user's edit position isn't lost to a full re-sort. The list will
+    // resort on the next coarse refresh (tab switch, generate, etc.).
+    refreshSetterTempoRow(p);
   });
   priSel.addEventListener('click', e => e.stopPropagation());
   priRow.appendChild(priSel);
@@ -1659,11 +1573,29 @@ function buildRosterFields(p) {
   return wrap;
 }
 
+function refreshSetterTempoRow(p) {
+  const card = document.querySelector(`.player-card[data-id="${p.id}"]`);
+  if (!card) return;
+  const skillBox = card.querySelector('.player-skills');
+  if (!skillBox) return;
+  const existing = skillBox.querySelector('.roster-field-tempo');
+  if (existing) existing.remove();
+  const fresh = buildSetterTempoRow(p);
+  if (fresh) {
+    // Insert before .player-actions (the delete-button row) so order matches initial render.
+    const actions = skillBox.querySelector('.player-actions');
+    skillBox.insertBefore(fresh, actions);
+  }
+}
+
 function buildSetterTempoRow(p) {
   if (!S.settings?.showSetterTempo) return null;
   if ((p.positions?.[0] || 'OH') !== 'S') return null;
   const row = el('div', { cls: 'roster-field roster-field-tempo' });
-  row.appendChild(el('label', { text: 'Setter tempo' }));
+  row.appendChild(el('label', {
+    text: 'Setter tempo (1 = high-set only · 10 = runs quick / slide / back)',
+    title: 'How many tempos this setter can confidently run. Higher = wider playbook.'
+  }));
   const input = el('input', {
     attrs: { type: 'number', min: '1', max: '10', step: '1', inputmode: 'numeric' }
   });
@@ -1756,165 +1688,501 @@ function updateCounts() {
   $('#availCount').textContent = avail;
   $('#totalCount').textContent = total;
 
-  const runBtn = $('#runBtn');
-  if (runBtn) runBtn.disabled = avail < 6;
-  const hint = $('#runHint');
-  if (hint) {
-    if (avail < 6) {
-      hint.textContent = `Need ${6 - avail} more available player${6 - avail === 1 ? '' : 's'} (named, marked available).`;
-    } else {
-      hint.textContent = `${avail} players available — ready to generate.`;
-    }
-  }
+  const genBtn = $('#generateBtn');
+  if (genBtn) genBtn.disabled = avail < 7;
 }
 
 /* ===== Lineup Render ===== */
+
+const ZONE_LABELS = { 1: 'BR', 2: 'FR', 3: 'FM', 4: 'FL', 5: 'BL', 6: 'BM' };
+
 function renderLineup() {
   const r = S.result;
   const wrap = $('#lineupResult');
-  if (!r || r.error) {
+  const status = $('#lineupStatus');
+  if (!r) {
     wrap.hidden = true;
-    if (r && r.error) toast(r.error);
+    if (status) status.textContent = '';
+    updateClearOverridesBtn();
+    return;
+  }
+  if (r.error) {
+    wrap.hidden = true;
+    if (status) {
+      status.textContent = r.error;
+      status.className = 'lineup-status lineup-status-error';
+    }
+    updateClearOverridesBtn();
     return;
   }
   wrap.hidden = false;
-
-  $('.rotation-controls').style.display = r.mode === 'strict' ? 'flex' : 'none';
-
-  // Modified badge / reset row visibility
-  $('#modifiedBadge').hidden = !r.modified;
-  $('#resetRow').hidden = !r.modified;
-
-  renderCourt();
-  renderStrengthBars();
-  renderServingOrder();
+  if (status) {
+    status.textContent = '';
+    status.className = 'lineup-status';
+  }
+  renderRotationGrid();
+  renderLiberoPanel();
+  renderSubPatternsPanel();
+  renderPairingsPanel();
+  renderLineupBreakdown();
   renderBench();
+  updateClearOverridesBtn();
 }
 
-function renderCourt() {
-  const layer = $('#playerLayer');
-  layer.replaceChildren();
-  const r = S.result;
-  if (!r) return;
-  const rotIdx = r.mode === 'strict' ? S.currentRotation : 0;
-  const rotation = r.rotations[rotIdx];
-  $('#rotNum').textContent = String(rotIdx + 1);
+function updateClearOverridesBtn() {
+  const btn = $('#clearOverridesBtn');
+  if (!btn) return;
+  btn.hidden = !(S.lineup.overrides && S.lineup.overrides.length > 0);
+}
 
-  for (let pos = 1; pos <= 6; pos++) {
-    const player = rotation[pos];
-    if (!player) continue;
-    const firstName = (player.name || '?').split(' ')[0];
-    const pname = el('span', { cls: 'pname', text: firstName });
-    const ppos = el('span', { cls: 'ppos', text: POSITION_NAMES[pos] });
-    const cls = ['player-circle'];
-    if (pos === 1) cls.push('is-server');
-    if (pos === 2) cls.push('is-setter');
-    if (S.swapMode?.kind === 'court' && S.result.starting6[S.swapMode.idx]?.id === player.id) {
-      cls.push('swap-source');
+/* Rotation grid: 6 cards, each rendering the on-floor 6 in a mini-court layout
+   (front row 4-3-2 across the top, back row 5-6-1 across the bottom). The
+   server (zone 1) gets a star; libero replacement is shown as a chip swap. */
+function renderRotationGrid() {
+  const grid = $('#rotationGrid');
+  grid.replaceChildren();
+  const r = S.result;
+  if (!r || !r.arrangement) return;
+
+  const settings = S.settings || defaultSettings();
+  const ruleset = RULESETS[settings.ruleset] || RULESETS.rec;
+  const patterns = S.lineup.subPatterns || [];
+
+  r.arrangement.rotations.forEach((rot, idx) => {
+    const score = r.perRotationScores[idx];
+    const card = el('div', { cls: 'rot-card', dataset: { rotIdx: String(idx) } });
+    const head = el('div', { cls: 'rot-card-head' }, [
+      el('span', { cls: 'rot-num', text: `Rotation ${idx + 1}` }),
+      el('span', { cls: 'rot-score', text: score.toFixed(1) })
+    ]);
+    card.appendChild(head);
+
+    // Apply libero swap and any sub patterns to compute the on-floor 6.
+    const afterSubs = applySubPatterns(rot, patterns, idx);
+    const effective = effectiveRotationWithLibero(afterSubs, r.libero, ruleset);
+
+    const court = el('div', { cls: 'rot-court' });
+    // Zones drawn left-to-right, top row 4-3-2, bottom row 5-6-1.
+    const zoneOrder = [4, 3, 2, 5, 6, 1];
+    for (const z of zoneOrder) {
+      const player = playerAtZone(effective, z);
+      const overridden = isZoneOverridden(idx, z);
+      const isServer = z === 1;
+      const isLibero = r.libero && r.libero.player && player && player.id === r.libero.player.id;
+      const cellCls = ['rot-zone'];
+      if (isServer) cellCls.push('rot-zone-server');
+      if (overridden) cellCls.push('rot-zone-override');
+      if (isLibero) cellCls.push('rot-zone-libero');
+
+      const zoneLabel = el('span', { cls: 'rot-zone-num', text: `${z} · ${ZONE_LABELS[z]}` });
+      const chip = buildPlayerChip(player, idx, z);
+      const cell = el('div', {
+        cls: cellCls.join(' '),
+        dataset: { rotIdx: String(idx), zone: String(z) }
+      }, [zoneLabel, chip]);
+      court.appendChild(cell);
     }
-    const courtIdx = startingIdxOfPlayer(player.id);
-    const circle = el('div', {
-      cls: cls.join(' '),
-      dataset: { pos: String(pos), playerId: player.id },
-      on: {
-        pointerdown: e => {
-          onDragStart({ kind: 'court', playerId: player.id, courtIdx }, e);
-        },
-        click: e => {
-          // Click won't fire if a drag occurred (browser suppresses)
-          e.stopPropagation();
-          handleCourtPlayerTap(player.id);
-        }
-      }
-    }, [pname, ppos]);
-    layer.appendChild(circle);
-  }
+    card.appendChild(court);
+    grid.appendChild(card);
+  });
 }
 
-function renderStrengthBars() {
-  const r = S.result;
-  const wrap = $('#strengthBars');
-  wrap.replaceChildren();
-  if (!r || r.mode !== 'strict') {
-    $('.rotation-strength').style.display = 'none';
-    return;
+function effectiveRotationWithLibero(rotation, libero, ruleset) {
+  if (!libero || !libero.player) return rotation;
+  const replaces = libero.replaces || ['MB'];
+  const backRow = rotation.backRow.slice();
+  const idx = backRow.findIndex(p => p && replaces.includes(p.positions && p.positions[0]));
+  if (idx < 0) return rotation;
+  const isServerSlot = idx === 2;
+  const liberoCanServe = ruleset && ruleset.liberoMayServe;
+  if (isServerSlot && !liberoCanServe) return rotation;
+  backRow[idx] = libero.player;
+  return { frontRow: rotation.frontRow.slice(), backRow, server: isServerSlot ? libero.player : rotation.server };
+}
+
+function playerAtZone(rotation, zone) {
+  // Front row indices: 4 -> [0], 3 -> [1], 2 -> [2]
+  // Back row indices: 5 -> [0], 6 -> [1], 1 -> [2]
+  if (zone === 4) return rotation.frontRow[0];
+  if (zone === 3) return rotation.frontRow[1];
+  if (zone === 2) return rotation.frontRow[2];
+  if (zone === 5) return rotation.backRow[0];
+  if (zone === 6) return rotation.backRow[1];
+  if (zone === 1) return rotation.backRow[2];
+  return null;
+}
+
+function isZoneOverridden(rotIdx, zone) {
+  return (S.lineup.overrides || []).some(o => o.rotationIndex === rotIdx && o.zone === zone);
+}
+
+function buildPlayerChip(player, rotIdx, zone) {
+  if (!player) {
+    return el('div', { cls: 'rot-chip rot-chip-empty', text: '—' });
   }
-  $('.rotation-strength').style.display = 'block';
+  const firstName = (player.name || '?').split(' ')[0];
+  const role = (player.positions && player.positions[0]) || '';
+  const cls = ['rot-chip', `rot-chip-${role || 'OH'}`];
+  const chip = el('div', {
+    cls: cls.join(' '),
+    dataset: { playerId: player.id, rotIdx: String(rotIdx), zone: String(zone) },
+    title: `${player.name} (${role})`,
+    on: {
+      pointerdown: e => onDragStart({ kind: 'court', playerId: player.id, rotIdx, zone }, e)
+    }
+  }, [
+    el('span', { cls: 'rot-chip-name', text: firstName }),
+    el('span', { cls: 'rot-chip-role', text: role })
+  ]);
+  return chip;
+}
 
-  const max = Math.max(...r.rotationScores);
-  const min = Math.min(...r.rotationScores);
-  const range = Math.max(max - min, 1);
-  const weakThreshold = min + range * 0.2;
+/* Libero panel: pick player, choose roles to replace, optional serving rotation.
+   Auto-regenerate when changed. */
+function renderLiberoPanel() {
+  const body = $('#liberoPanelBody');
+  if (!body) return;
+  body.replaceChildren();
+  const cfg = S.lineup.liberoConfig;
+  const settings = S.settings || defaultSettings();
+  const ruleset = RULESETS[settings.ruleset] || RULESETS.rec;
 
-  r.rotationScores.forEach((score, i) => {
-    const cls = ['strength-bar'];
-    if (i === S.currentRotation) cls.push('active');
-    if (score <= weakThreshold && score < max) cls.push('weak');
-    const heightPct = ((score - min) / range) * 70 + 30;
-    const label = el('span', { cls: 'strength-bar-label', text: String(i + 1) });
-    const bar = el('div', {
-      cls: cls.join(' '),
-      title: `Rotation ${i + 1}: strength ${score.toFixed(0)}`,
+  // Player picker — anyone with L in their valid roles (Rec accepts anyone)
+  const liberos = S.players.filter(p => validRolesForPlayer(p, ruleset).includes('L'));
+  const picker = el('select', {
+    on: {
+      change: e => {
+        cfg.playerId = e.target.value || null;
+        save();
+        scheduleRegen();
+      }
+    }
+  });
+  const noneOpt = document.createElement('option');
+  noneOpt.value = ''; noneOpt.textContent = '— auto-pick from L starter —';
+  picker.appendChild(noneOpt);
+  liberos.forEach(p => {
+    const o = document.createElement('option');
+    o.value = p.id; o.textContent = p.name || '(unnamed)';
+    picker.appendChild(o);
+  });
+  picker.value = cfg.playerId || '';
+  body.appendChild(el('div', { cls: 'lb-row' }, [
+    el('label', { text: 'Player' }), picker
+  ]));
+
+  // Replaces (multi via checkboxes)
+  const replacesWrap = el('div', { cls: 'lb-replaces-wrap' });
+  ['MB', 'OPP', 'OH', 'DS', 'S'].forEach(role => {
+    const cb = el('input', { attrs: { type: 'checkbox', value: role } });
+    cb.checked = (cfg.replaces || ['MB']).includes(role);
+    cb.addEventListener('change', () => {
+      const set = new Set(cfg.replaces || []);
+      if (cb.checked) set.add(role); else set.delete(role);
+      cfg.replaces = Array.from(set);
+      save();
+      scheduleRegen();
+    });
+    replacesWrap.appendChild(el('label', { cls: 'lb-replaces-chip' }, [cb, role]));
+  });
+  body.appendChild(el('div', { cls: 'lb-row' }, [
+    el('label', { text: 'Replaces (back row)' }), replacesWrap
+  ]));
+
+  // Serves in rotation (only if ruleset allows)
+  const serveLabel = el('label', { text: 'Serves in rotation' });
+  const serveSel = el('select', {
+    on: {
+      change: e => {
+        cfg.servesInRotation = e.target.value === '' ? null : Number(e.target.value);
+        save();
+        scheduleRegen();
+      }
+    }
+  });
+  if (!ruleset.liberoMayServe) {
+    serveSel.disabled = true;
+  }
+  const noneServe = document.createElement('option');
+  noneServe.value = ''; noneServe.textContent = ruleset.liberoMayServe ? '— none —' : '(libero may not serve in this ruleset)';
+  serveSel.appendChild(noneServe);
+  for (let i = 0; i < 6; i++) {
+    const o = document.createElement('option');
+    o.value = String(i); o.textContent = `Rotation ${i + 1}`;
+    serveSel.appendChild(o);
+  }
+  serveSel.value = cfg.servesInRotation == null ? '' : String(cfg.servesInRotation);
+  body.appendChild(el('div', { cls: 'lb-row' }, [serveLabel, serveSel]));
+}
+
+/* Sub patterns: list current patterns + a template picker. Each pattern has
+   out-player select, in-player select, trigger rotation, optional return rotation. */
+function renderSubPatternsPanel() {
+  const body = $('#subPatternsBody');
+  if (!body) return;
+  body.replaceChildren();
+  const settings = S.settings || defaultSettings();
+  const ruleset = RULESETS[settings.ruleset] || RULESETS.rec;
+  const patterns = S.lineup.subPatterns;
+
+  // Subs counter
+  const subsUsed = patterns.reduce((n, p) => n + (p.return ? 2 : 1), 0);
+  const counter = $('#subsCounter');
+  if (counter) {
+    counter.textContent = `${subsUsed} / ${ruleset.subsPerSet}`;
+    counter.classList.toggle('over', subsUsed > ruleset.subsPerSet);
+  }
+
+  patterns.forEach((pat, i) => body.appendChild(buildSubPatternCard(pat, i)));
+
+  // Add pattern row
+  const addRow = el('div', { cls: 'lb-row' });
+  const tplSel = el('select', { attrs: { id: 'subTemplatePicker' } });
+  const noneOpt = document.createElement('option');
+  noneOpt.value = ''; noneOpt.textContent = '— pick template —';
+  tplSel.appendChild(noneOpt);
+  Object.entries(SUB_PATTERN_TEMPLATES).forEach(([key, tpl]) => {
+    const o = document.createElement('option');
+    o.value = key; o.textContent = tpl.label;
+    tplSel.appendChild(o);
+  });
+  const addBtn = el('button', {
+    cls: 'btn btn-secondary btn-tiny',
+    text: '+ Add',
+    on: {
+      click: () => {
+        const key = tplSel.value;
+        if (!key) { toast('Pick a template first.'); return; }
+        const tpl = SUB_PATTERN_TEMPLATES[key];
+        S.lineup.subPatterns.push({
+          id: 'sp_' + Math.random().toString(36).slice(2, 8),
+          template: key,
+          out: null, in: null,
+          trigger: { ...tpl.trigger },
+          return: tpl.return ? { ...tpl.return } : null
+        });
+        save();
+        renderSubPatternsPanel();
+        scheduleRegen();
+      }
+    }
+  });
+  addRow.appendChild(tplSel);
+  addRow.appendChild(addBtn);
+  body.appendChild(addRow);
+}
+
+function buildSubPatternCard(pat, idx) {
+  const card = el('div', { cls: 'lb-sub-card' });
+  const tpl = SUB_PATTERN_TEMPLATES[pat.template] || { label: 'Custom', description: '' };
+  card.appendChild(el('div', { cls: 'lb-sub-title', text: tpl.label }));
+  if (tpl.description) card.appendChild(el('div', { cls: 'lb-sub-desc', text: tpl.description }));
+
+  const playerOpts = [{ value: '', label: '— pick player —' }]
+    .concat(S.players.map(p => ({ value: p.id, label: p.name || '(unnamed)' })));
+
+  const outSel = playerSelect(playerOpts, pat.out, v => { pat.out = v || null; save(); scheduleRegen(); });
+  const inSel = playerSelect(playerOpts, pat.in && pat.in.id, v => {
+    pat.in = v ? S.players.find(p => p.id === v) || null : null;
+    save();
+    scheduleRegen();
+  });
+  const rotSel = el('select', {
+    on: {
+      change: e => {
+        pat.trigger.rotationIndex = Number(e.target.value);
+        save();
+        scheduleRegen();
+      }
+    }
+  });
+  for (let i = 0; i < 6; i++) {
+    const o = document.createElement('option');
+    o.value = String(i); o.textContent = `Trigger at rot ${i + 1}`;
+    rotSel.appendChild(o);
+  }
+  rotSel.value = String(pat.trigger?.rotationIndex || 0);
+
+  const delBtn = el('button', {
+    cls: 'btn btn-secondary btn-tiny',
+    text: '✕',
+    on: {
+      click: () => {
+        S.lineup.subPatterns.splice(idx, 1);
+        save();
+        renderSubPatternsPanel();
+        scheduleRegen();
+      }
+    }
+  });
+
+  card.appendChild(el('div', { cls: 'lb-sub-fields' }, [
+    el('label', {}, ['Out: ', outSel]),
+    el('label', {}, ['In: ', inSel]),
+    el('label', {}, [rotSel]),
+    delBtn
+  ]));
+  return card;
+}
+
+/* Pairings panel: each entry forces both named players to start together.
+   Useful for "these two ride together or not at all" cases (twins, friend
+   group, returning libero who only plays with her primary setter, etc.). */
+function renderPairingsPanel() {
+  const body = $('#pairingsBody');
+  if (!body) return;
+  body.replaceChildren();
+  const pairings = S.lineup.pairings;
+  const counter = $('#pairingsCounter');
+  if (counter) counter.textContent = pairings.length ? String(pairings.length) : '';
+
+  const playerOpts = [{ value: '', label: '— pick player —' }]
+    .concat(S.players
+      .filter(p => (p.name || '').trim())
+      .map(p => ({ value: p.id, label: p.name })));
+
+  pairings.forEach((pair, i) => {
+    const card = el('div', { cls: 'lb-sub-card' });
+    const aSel = playerSelect(playerOpts, pair.a, v => { pair.a = v || null; save(); scheduleRegen(); });
+    const bSel = playerSelect(playerOpts, pair.b, v => { pair.b = v || null; save(); scheduleRegen(); });
+    const delBtn = el('button', {
+      cls: 'btn btn-secondary btn-tiny',
+      text: '✕',
       on: {
         click: () => {
-          S.currentRotation = i;
-          renderCourt();
-          renderStrengthBars();
+          S.lineup.pairings.splice(i, 1);
+          save();
+          renderPairingsPanel();
+          scheduleRegen();
         }
       }
-    }, [label]);
-    bar.style.height = heightPct + '%';
-    wrap.appendChild(bar);
+    });
+    card.appendChild(el('div', { cls: 'lb-sub-fields' }, [
+      el('label', {}, ['Player A: ', aSel]),
+      el('span', { cls: 'lb-pair-and', text: '+' }),
+      el('label', {}, ['Player B: ', bSel]),
+      delBtn
+    ]));
+    card.appendChild(el('div', { cls: 'lb-sub-desc', text: 'Both must start together — neither plays without the other.' }));
+    body.appendChild(card);
   });
-  wrap.parentElement.classList.add('strength-bars-wrapper');
+
+  const addRow = el('div', { cls: 'lb-row' });
+  const addBtn = el('button', {
+    cls: 'btn btn-secondary btn-tiny',
+    text: '+ Add pairing',
+    on: {
+      click: () => {
+        S.lineup.pairings.push({ a: null, b: null });
+        save();
+        renderPairingsPanel();
+      }
+    }
+  });
+  addRow.appendChild(addBtn);
+  body.appendChild(addRow);
 }
 
-function renderServingOrder() {
-  const r = S.result;
-  const ol = $('#servingOrder');
-  ol.replaceChildren();
-  r.servingOrder.forEach(player => {
-    const stars = '★'.repeat(Math.round((player.skills.serving || 0) / 2));
-    const star = el('span', { cls: 'star', text: stars });
-    const skill = el('span', { cls: 'serve-skill' }, [
-      'Serving ', star, ' ' + (player.skills.serving || 0)
-    ]);
-    const name = el('span', { cls: 'serve-name', text: player.name || '?' });
-    const li = el('li', {}, [name, skill]);
-    ol.appendChild(li);
+function playerSelect(options, current, onChange) {
+  const sel = el('select', { on: { change: e => onChange(e.target.value) } });
+  options.forEach(({ value, label }) => {
+    const o = document.createElement('option');
+    o.value = value; o.textContent = label;
+    sel.appendChild(o);
   });
+  sel.value = current || '';
+  return sel;
+}
+
+/* Lineup breakdown: per-rotation scores, maximin, average, and a short
+   "why this lineup" string explaining the constraints that drove starter
+   selection. */
+function renderLineupBreakdown() {
+  const wrap = $('#lineupBreakdown');
+  if (!wrap) return;
+  wrap.replaceChildren();
+  const r = S.result;
+  if (!r || r.error) return;
+
+  const scores = r.perRotationScores;
+  const min = Math.min.apply(null, scores);
+  const max = Math.max.apply(null, scores);
+  const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+
+  const summary = el('div', { cls: 'lb-bd-summary' });
+  summary.appendChild(el('div', { cls: 'lb-bd-stat' }, [
+    el('span', { cls: 'lb-bd-stat-label', text: 'Worst' }),
+    el('span', { cls: 'lb-bd-stat-val lb-bd-stat-min', text: min.toFixed(1) })
+  ]));
+  summary.appendChild(el('div', { cls: 'lb-bd-stat' }, [
+    el('span', { cls: 'lb-bd-stat-label', text: 'Average' }),
+    el('span', { cls: 'lb-bd-stat-val', text: avg.toFixed(1) })
+  ]));
+  summary.appendChild(el('div', { cls: 'lb-bd-stat' }, [
+    el('span', { cls: 'lb-bd-stat-label', text: 'Best' }),
+    el('span', { cls: 'lb-bd-stat-val', text: max.toFixed(1) })
+  ]));
+  wrap.appendChild(summary);
+
+  // Per-rotation bars
+  const bars = el('div', { cls: 'lb-bd-bars' });
+  const range = Math.max(max - min, 1);
+  scores.forEach((s, i) => {
+    const pct = ((s - min) / range) * 80 + 20;
+    const cls = ['lb-bd-bar'];
+    if (s === min) cls.push('is-weak');
+    if (s === max) cls.push('is-strong');
+    const bar = el('div', { cls: cls.join(' '), title: `Rotation ${i + 1}: ${s.toFixed(2)}` });
+    bar.style.height = pct + '%';
+    bar.appendChild(el('span', { cls: 'lb-bd-bar-label', text: String(i + 1) }));
+    bars.appendChild(bar);
+  });
+  wrap.appendChild(bars);
+
+  // Why this lineup — list role assignments
+  const why = el('div', { cls: 'lb-bd-why' });
+  why.appendChild(el('h4', { text: 'Starting roles' }));
+  const dl = document.createElement('dl');
+  ROLES.forEach(role => {
+    const players = (r.starters[role] || []).filter(Boolean);
+    if (players.length === 0) return;
+    const dt = el('dt', { text: `${role} — ${ROLE_LABELS[role]}` });
+    const dd = el('dd', { text: players.map(p => p.name || '(unnamed)').join(', ') });
+    dl.appendChild(dt);
+    dl.appendChild(dd);
+  });
+  why.appendChild(dl);
+  wrap.appendChild(why);
 }
 
 function renderBench() {
   const ul = $('#benchList');
+  if (!ul) return;
   ul.replaceChildren();
   const r = S.result;
-  if (!r.bench.length) {
-    ul.appendChild(el('li', { cls: 'bench-empty', text: 'No bench — all available players are starting.' }));
+  if (!r || r.error) return;
+  const startingIds = new Set();
+  ROLES.forEach(role => (r.starters[role] || []).forEach(p => p && startingIds.add(p.id)));
+  const benchPlayers = S.players
+    .filter(p => p.available && (p.name || '').trim() && !startingIds.has(p.id))
+    .map(p => {
+      const role = (p.positions && p.positions[0]) || 'OH';
+      return { player: p, value: playerFitForRole(p, role, S.settings || defaultSettings()), skill: playerSkillRaw(p) };
+    });
+
+  if (benchPlayers.length === 0) {
+    ul.appendChild(el('li', { cls: 'bench-empty', text: 'No bench — every available player is starting.' }));
     return;
   }
-  const sorted = sortByMode(
-    r.bench,
-    S.benchSort,
-    item => item.player.name,
-    item => item.skill
-  );
+  const sorted = sortByMode(benchPlayers, S.benchSort, item => item.player.name, item => item.skill);
   sorted.forEach(({ player, skill }) => {
+    const role = (player.positions && player.positions[0]) || '';
     const name = el('span', { cls: 'bench-name', text: player.name || '?' });
+    const tag = el('span', { cls: 'bench-role-tag', text: role });
     const pill = el('span', { cls: 'bench-stat-pill', text: skill.toFixed(1) });
-    const subBtn = el('button', {
-      cls: 'btn-sub-in',
-      text: 'Sub In →',
-      on: {
-        click: e => {
-          e.stopPropagation();
-          enterSwapMode('bench', player.id);
-        }
-      }
-    });
-    const stats = el('span', { cls: 'bench-stats' }, [pill, subBtn]);
+    const stats = el('span', { cls: 'bench-stats' }, [tag, pill]);
     const li = el('li', {
-      attrs: { title: 'Drag onto a court player to sub in' },
+      attrs: { title: 'Drag onto a court zone to pin this player there' },
       on: {
         pointerdown: e => onDragStart({ kind: 'bench', playerId: player.id }, e)
       }
@@ -1981,8 +2249,6 @@ function init() {
 
   $('#addPlayerBtn').addEventListener('click', () => {
     const np = createPlayer('');
-    // Stay collapsed — keeps the Add Player button close for rapid roster entry.
-    // User can tap the card later to expand and edit skills.
     S.players.push(np);
     save();
     renderRoster();
@@ -1990,20 +2256,10 @@ function init() {
       const card = document.querySelector(`.player-card[data-id="${np.id}"]`);
       if (!card) return;
       const input = card.querySelector('.player-name-input');
+      // Scroll the NEW card into view (not the Add button) so the user
+      // can see what they're typing.
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
       if (input) input.focus();
-      // Scroll so the new card AND the Add Player button below it are visible
-      const btn = $('#addPlayerBtn');
-      btn?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    });
-  });
-
-  $$('input[name="mode"]').forEach(r => {
-    r.checked = (r.value === S.mode);
-    r.addEventListener('change', e => {
-      if (e.target.checked) {
-        S.mode = e.target.value;
-        save();
-      }
     });
   });
 
@@ -2017,13 +2273,17 @@ function init() {
     rulesetSel.addEventListener('change', e => {
       S.settings.ruleset = RULESETS[e.target.value] ? e.target.value : 'rec';
       save();
+      scheduleRegen();
     });
   }
   if (systemSel) {
     systemSel.value = S.settings.system;
     systemSel.addEventListener('change', e => {
       S.settings.system = e.target.value === '6-2' ? '6-2' : '5-1';
+      const mirror = $('#systemSelectLineup');
+      if (mirror) mirror.value = S.settings.system;
       save();
+      scheduleRegen();
     });
   }
   if (jerseyTog) {
@@ -2040,6 +2300,7 @@ function init() {
       S.settings.showSetterTempo = !!e.target.checked;
       save();
       renderRoster();
+      scheduleRegen();
     });
   }
 
@@ -2052,30 +2313,38 @@ function init() {
     toast('Weights reset.');
   });
 
-  $('#runBtn').addEventListener('click', () => {
-    const result = generateLineup();
-    if (result.error) {
-      toast(result.error);
-      return;
-    }
-    S.result = result;
-    S.currentRotation = 0;
-    renderLineup();
-    setTab('lineup');
-    toast(result.mode === 'strict' ? 'Lineup ready — 6 rotations generated.' : 'Lineup ready.');
+  // Lineup builder controls
+  const systemSelLineup = $('#systemSelectLineup');
+  if (systemSelLineup) {
+    systemSelLineup.value = S.settings.system;
+    systemSelLineup.addEventListener('change', e => {
+      S.settings.system = e.target.value === '6-2' ? '6-2' : '5-1';
+      if (systemSel) systemSel.value = S.settings.system;
+      save();
+      scheduleRegen();
+    });
+  }
+  const optModeSel = $('#optimizationMode');
+  if (optModeSel) {
+    optModeSel.value = S.lineup.optimizationMode;
+    optModeSel.addEventListener('change', e => {
+      const v = e.target.value;
+      if (['balanced', 'best6', 'sr', 'serving'].includes(v)) {
+        S.lineup.optimizationMode = v;
+        save();
+        scheduleRegen();
+      }
+    });
+  }
+  $('#generateBtn').addEventListener('click', () => {
+    runGenerate({ toastOnSuccess: true });
   });
-
-  $('#nextRotBtn').addEventListener('click', () => {
-    if (!S.result || S.result.mode !== 'strict') return;
-    S.currentRotation = (S.currentRotation + 1) % 6;
-    renderCourt();
-    renderStrengthBars();
-  });
-  $('#prevRotBtn').addEventListener('click', () => {
-    if (!S.result || S.result.mode !== 'strict') return;
-    S.currentRotation = (S.currentRotation - 1 + 6) % 6;
-    renderCourt();
-    renderStrengthBars();
+  $('#clearOverridesBtn').addEventListener('click', () => {
+    if (!S.lineup.overrides.length) return;
+    S.lineup.overrides = [];
+    save();
+    runGenerate({ toastOnSuccess: false });
+    toast('Pins cleared.');
   });
 
   $('#shareBtn').addEventListener('click', openShareModal);
@@ -2106,32 +2375,13 @@ function init() {
   // Tap-and-select the URL input contents for easy manual copy
   $('#shareUrlInput').addEventListener('focus', e => e.target.select());
 
-  // Breakdown popup
-  $('#breakdownClose').addEventListener('click', closeBreakdown);
-  $('#breakdownSwap').addEventListener('click', breakdownStartSwap);
-  $('#breakdownSubOff').addEventListener('click', breakdownSubOff);
-  $('#breakdownModal').addEventListener('click', e => {
-    if (e.target.id === 'breakdownModal') closeBreakdown();
-  });
-
-  // Swap banner cancel
-  $('#swapBannerCancel').addEventListener('click', exitSwapMode);
-
-  // Reset to optimal
-  $('#resetOptimalBtn').addEventListener('click', resetToOptimal);
-
-  // ESC cancels swap mode or popup
+  // ESC closes any open modal
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
-      if (S.swapMode) exitSwapMode();
-      if (!$('#breakdownModal').hidden) closeBreakdown();
       if (!$('#shareModal').hidden) closeShareModal();
       if (!$('#helpModal').hidden) closeHelp();
     }
   });
-
-  // Swipe on court → change rotation (strict mode only)
-  attachCourtSwipeHandlers();
 
   // Drag & drop window-level handlers
   window.addEventListener('pointermove', onDragMove);
@@ -2171,32 +2421,27 @@ function init() {
   }
 }
 
-function attachCourtSwipeHandlers() {
-  const court = $('#court');
-  if (!court) return;
-  let startX = null, startY = null, startT = 0;
-  court.addEventListener('touchstart', e => {
-    if (e.target.closest('.player-circle')) return;
-    if (S.swapMode) return;
-    if (!S.result || S.result.mode !== 'strict') return;
-    startX = e.touches[0].clientX;
-    startY = e.touches[0].clientY;
-    startT = Date.now();
-  }, { passive: true });
-  court.addEventListener('touchend', e => {
-    if (startX === null) return;
-    const endX = e.changedTouches[0].clientX;
-    const endY = e.changedTouches[0].clientY;
-    const dx = endX - startX;
-    const dy = endY - startY;
-    const dt = Date.now() - startT;
-    startX = null;
-    if (dt > 600) return;
-    if (Math.abs(dx) < 50) return;
-    if (Math.abs(dy) > 60) return;
-    if (dx < 0) $('#nextRotBtn').click();
-    else $('#prevRotBtn').click();
-  }, { passive: true });
+/* runGenerate: invoke generateLineup with current state and re-render. */
+function runGenerate(opts = {}) {
+  const result = generateLineup();
+  S.result = result;
+  if (result.error) {
+    renderLineup();
+    return;
+  }
+  if (result.validation) toast(result.validation, 3000);
+  renderLineup();
+  if (opts.toastOnSuccess) toast('Lineup ready.');
+}
+
+/* scheduleRegen: debounced auto-regenerate when settings/lineup config change.
+   200ms is fast enough to feel responsive but coalesces rapid taps (e.g. cycling
+   through ruleset options). */
+let _regenTimer = null;
+function scheduleRegen() {
+  if (!S.result) return; // never auto-generate before user has clicked Generate at least once
+  clearTimeout(_regenTimer);
+  _regenTimer = setTimeout(() => runGenerate(), 200);
 }
 
 if (document.readyState === 'loading') {
