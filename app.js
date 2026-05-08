@@ -1652,7 +1652,8 @@ function pickScrimmageTeams(state, opts) {
   };
 }
 
-// Expose pure functions for Block 6 page.evaluate tests.
+// Expose pure functions + state object for Block 6 page.evaluate tests.
+// Tests inject roster/settings via window.S then call window.generateLineup(window.S).
 if (typeof window !== 'undefined') {
   window.generateLineup = generateLineup;
   window.chooseStarters = chooseStarters;
@@ -1666,6 +1667,12 @@ if (typeof window !== 'undefined') {
   window.isHereTonight = isHereTonight;
   window.SUB_PATTERN_TEMPLATES = SUB_PATTERN_TEMPLATES;
   window.SYSTEM_REQUIREMENTS = SYSTEM_REQUIREMENTS;
+  Object.defineProperty(window, 'S', { get: () => S, configurable: true });
+  // Print helpers — direct reference avoids the shadowing footgun where
+  // window.fn = () => fn() recurses (the arrow's lexical lookup finds the
+  // window property assigned just above, not the function declaration).
+  window.buildPrintRosterDOM = buildPrintRosterDOM;
+  window.buildPrintLineupDOM = buildPrintLineupDOM;
 }
 
 /* ===== Demo roster =====
@@ -1696,6 +1703,141 @@ function loadDemoRoster() {
   }));
   save();
   renderRoster();
+}
+
+/* ===== Print =====
+   Renders a clean white-paper version of the roster or current lineup into
+   a hidden #printSheet using DOM methods (no innerHTML — keeps user-supplied
+   names safe by construction). The sheet is display:none on screen and only
+   revealed inside @media print when body.printing is active. */
+
+function buildPrintRosterDOM() {
+  const teamName = S.teamName || DEFAULT_TEAM_NAME;
+  const date = new Date().toLocaleDateString();
+  const avail = S.players.filter(p => p.available).length;
+  const sorted = S.players.slice().sort((a, b) => playerSkillRaw(b) - playerSkillRaw(a));
+
+  const page = el('div', { cls: 'print-page' });
+  const header = el('header', { cls: 'print-header' }, [
+    el('h1', { text: 'Court IQ — ' + teamName }),
+    el('div', { cls: 'print-meta', text:
+      'Roster · ' + date + ' · ' + avail + ' of ' + S.players.length + ' available' })
+  ]);
+  page.appendChild(header);
+
+  const table = el('table', { cls: 'print-roster' });
+  const thead = el('thead', {}, [
+    el('tr', {}, [
+      el('th', { text: '#' }),
+      el('th', { text: 'Name' }),
+      el('th', { text: 'Position' }),
+      el('th', { text: 'Hand' }),
+      el('th', { text: 'Height' }),
+      el('th', { text: 'AVG' }),
+      el('th', { text: '' })
+    ])
+  ]);
+  const tbody = el('tbody');
+  sorted.forEach(p => {
+    const pos = [p.positions[0], p.positions[1]].filter(Boolean).join(' / ');
+    const avg = playerSkillRaw(p).toFixed(1);
+    const status = p.available ? '' : 'OUT';
+    tbody.appendChild(el('tr', {}, [
+      el('td', { cls: 'num', text: p.jersey || '' }),
+      el('td', { text: p.name || '—' }),
+      el('td', { text: pos }),
+      el('td', { cls: 'center', text: p.hand || '' }),
+      el('td', { text: p.height || '' }),
+      el('td', { cls: 'num', text: avg }),
+      el('td', { cls: 'status', text: status })
+    ]));
+  });
+  table.appendChild(thead);
+  table.appendChild(tbody);
+  page.appendChild(table);
+  return page;
+}
+
+function buildPrintLineupDOM() {
+  const teamName = S.teamName || DEFAULT_TEAM_NAME;
+  const date = new Date().toLocaleDateString();
+  const r = S.result;
+  const sys = S.settings.system;
+  const mode = S.lineup.optimizationMode;
+  const modeLabel = ({ balanced: 'Balanced', best6: 'Best 6 on floor', sr: 'Best serve receive', serving: 'Best serving' })[mode] || mode;
+  const lib = r.libero && r.libero.player;
+  const liberoNote = lib ? ' · Libero: ' + (lib.name || '—') : '';
+
+  const page = el('div', { cls: 'print-page' });
+  page.appendChild(el('header', { cls: 'print-header' }, [
+    el('h1', { text: 'Court IQ — ' + teamName }),
+    el('div', { cls: 'print-meta', text:
+      'Lineup · ' + date + ' · System ' + sys + ' · ' + modeLabel + liberoNote })
+  ]));
+
+  const cell = (p) => {
+    if (!p) return el('td');
+    const td = el('td');
+    const role = (p.positions && p.positions[0]) || '';
+    td.appendChild(el('span', { cls: 'rl', text: role }));
+    td.appendChild(document.createTextNode(' ' + (p.name || '—')));
+    return td;
+  };
+
+  const rots = el('div', { cls: 'print-rotations' });
+  (r.arrangement.rotations || []).forEach((rot, i) => {
+    const sc = (r.perRotationScores[i] || 0).toFixed(1);
+    const fr = rot.frontRow || [];
+    const br = rot.backRow || [];
+    const rotEl = el('div', { cls: 'print-rot' }, [
+      el('div', { cls: 'print-rot-head' }, [
+        el('span', { text: 'Rotation ' + (i + 1) }),
+        el('span', { cls: 'print-rot-score', text: sc })
+      ]),
+      el('table', { cls: 'print-court' }, [
+        el('tbody', {}, [
+          el('tr', {}, [el('th', { text: '4' }), el('th', { text: '3' }), el('th', { text: '2' })]),
+          el('tr', {}, [cell(fr[0]), cell(fr[1]), cell(fr[2])]),
+          el('tr', {}, [el('th', { text: '5' }), el('th', { text: '6' }), el('th', { text: '1' })]),
+          el('tr', {}, [cell(br[0]), cell(br[1]), cell(br[2])])
+        ])
+      ])
+    ]);
+    rots.appendChild(rotEl);
+  });
+  page.appendChild(rots);
+  return page;
+}
+
+function triggerPrint(node) {
+  const sheet = document.getElementById('printSheet');
+  if (!sheet) return;
+  sheet.replaceChildren(node);
+  document.body.classList.add('printing');
+  requestAnimationFrame(() => {
+    window.print();
+    const cleanup = () => {
+      document.body.classList.remove('printing');
+      sheet.replaceChildren();
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    // Safety fallback if afterprint never fires (older Safari, etc.)
+    setTimeout(cleanup, 4000);
+  });
+}
+
+function printRoster() {
+  if (!S.players.length) { toast('No players to print.'); return; }
+  triggerPrint(buildPrintRosterDOM());
+}
+
+function printLineup() {
+  if (!S.result || S.result.error || !S.result.arrangement) {
+    toast('Generate a lineup first.');
+    return;
+  }
+  triggerPrint(buildPrintLineupDOM());
 }
 
 /* ===== Drag & Drop ===== */
@@ -1932,6 +2074,8 @@ function renderRoster() {
   sorted.forEach(p => list.appendChild(buildPlayerCard(p)));
   unnamed.forEach(p => list.appendChild(buildPlayerCard(p)));
   $('#rosterEmpty').hidden = S.players.length > 0;
+  const printBtn = $('#printRosterBtn');
+  if (printBtn) printBtn.hidden = S.players.length === 0;
   updateCounts();
   // If there's an active lineup, refresh the bench so newly-added /
   // newly-available players appear without waiting for a regenerate.
@@ -3130,6 +3274,9 @@ function init() {
     toast('Demo roster loaded — switch to the Lineup tab and tap Generate.');
   });
 
+  $('#printRosterBtn')?.addEventListener('click', printRoster);
+  $('#printLineupBtn')?.addEventListener('click', printLineup);
+
   // Topbar settings: ruleset / system / jersey toggle / setter-tempo toggle
   const rulesetSel = $('#rulesetSelect');
   const systemSel = $('#systemSelect');
@@ -3316,6 +3463,8 @@ function init() {
 function runGenerate(opts = {}) {
   const result = generateLineup();
   S.result = result;
+  const printBtn = $('#printLineupBtn');
+  if (printBtn) printBtn.hidden = !!(result.error || !result.arrangement);
   if (result.error) {
     renderLineup();
     return;

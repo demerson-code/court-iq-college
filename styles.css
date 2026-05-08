@@ -2028,8 +2028,140 @@ body.dragging-court .bench-drop-zone { display: block; }
   text-overflow: ellipsis;
 }
 
-/* ===== Print ===== */
+/* ===== Print =====
+   Onscreen: #printSheet is fully hidden so it never affects layout.
+   Print:    body.printing hides everything except #printSheet, which is
+             styled as a clean letter-paper document. */
+
+.section-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#printSheet { display: none; }
+
 @media print {
-  .topbar, .tabs, .run-section, .rotation-controls .rot-btn { display: none; }
-  body { background: white; }
+  @page { size: letter portrait; margin: 0.5in; }
+
+  /* When printing, hide the live app and show only the print sheet. */
+  body.printing > *:not(#printSheet) { display: none !important; }
+  body.printing #printSheet {
+    display: block !important;
+    background: white;
+    color: #000;
+    font: 12pt/1.35 system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+
+  /* Print page layout */
+  .print-page {
+    width: 100%;
+    color: #000;
+    background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .print-header {
+    border-bottom: 2pt solid #000;
+    padding-bottom: 6pt;
+    margin-bottom: 12pt;
+  }
+  .print-header h1 {
+    font-size: 18pt;
+    font-weight: 800;
+    margin: 0 0 2pt;
+    letter-spacing: -0.2pt;
+  }
+  .print-meta {
+    font-size: 10pt;
+    color: #444;
+  }
+
+  /* Roster table */
+  .print-roster {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11pt;
+  }
+  .print-roster th,
+  .print-roster td {
+    border-bottom: 0.5pt solid #aaa;
+    padding: 5pt 6pt;
+    text-align: left;
+    vertical-align: top;
+  }
+  .print-roster th {
+    border-bottom: 1pt solid #000;
+    font-weight: 700;
+    font-size: 10pt;
+    text-transform: uppercase;
+    letter-spacing: 0.5pt;
+  }
+  .print-roster td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .print-roster td.center { text-align: center; }
+  .print-roster td.status {
+    color: #b00;
+    font-weight: 600;
+    font-size: 10pt;
+  }
+
+  /* Lineup rotation grid (3 columns × 2 rows on letter portrait) */
+  .print-rotations {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10pt;
+  }
+  .print-rot {
+    border: 0.75pt solid #000;
+    border-radius: 4pt;
+    padding: 6pt 8pt;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .print-rot-head {
+    display: flex;
+    justify-content: space-between;
+    font-weight: 700;
+    font-size: 11pt;
+    margin-bottom: 4pt;
+    padding-bottom: 3pt;
+    border-bottom: 0.5pt solid #888;
+  }
+  .print-rot-score {
+    font-variant-numeric: tabular-nums;
+    color: #444;
+  }
+  .print-court {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10pt;
+  }
+  .print-court th {
+    width: 33%;
+    background: #eee;
+    color: #555;
+    font-size: 8pt;
+    font-weight: 700;
+    padding: 2pt 0;
+    text-align: center;
+    border: 0.5pt solid #bbb;
+  }
+  .print-court td {
+    border: 0.5pt solid #bbb;
+    padding: 5pt 4pt;
+    vertical-align: top;
+    line-height: 1.2;
+  }
+  .print-court .rl {
+    display: inline-block;
+    background: #000;
+    color: #fff;
+    font-size: 7pt;
+    font-weight: 700;
+    padding: 1pt 3pt;
+    border-radius: 2pt;
+    margin-right: 3pt;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
 }

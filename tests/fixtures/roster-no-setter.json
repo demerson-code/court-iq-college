@@ -1,0 +1,9 @@
+[
+  { "id": "ns01", "name": "OH-A", "jersey": "1", "height": "", "hand": "R", "positions": ["OH", null],  "skills": { "serving": 6, "serveReceive": 7, "defense": 6, "hitting": 7, "blocking": 4, "setting": 3 }, "setterTempo": 5, "available": true },
+  { "id": "ns02", "name": "OH-B", "jersey": "2", "height": "", "hand": "R", "positions": ["OH", null],  "skills": { "serving": 6, "serveReceive": 7, "defense": 6, "hitting": 7, "blocking": 4, "setting": 3 }, "setterTempo": 5, "available": true },
+  { "id": "ns03", "name": "MB-A", "jersey": "3", "height": "", "hand": "R", "positions": ["MB", null],  "skills": { "serving": 5, "serveReceive": 3, "defense": 5, "hitting": 7, "blocking": 9, "setting": 2 }, "setterTempo": 5, "available": true },
+  { "id": "ns04", "name": "MB-B", "jersey": "4", "height": "", "hand": "R", "positions": ["MB", null],  "skills": { "serving": 5, "serveReceive": 3, "defense": 5, "hitting": 7, "blocking": 9, "setting": 2 }, "setterTempo": 5, "available": true },
+  { "id": "ns05", "name": "OPP-A", "jersey": "5", "height": "", "hand": "R", "positions": ["OPP", "OH"], "skills": { "serving": 8, "serveReceive": 5, "defense": 6, "hitting": 9, "blocking": 7, "setting": 3 }, "setterTempo": 5, "available": true },
+  { "id": "ns06", "name": "L-A",  "jersey": "6", "height": "", "hand": "R", "positions": ["L",  null],  "skills": { "serving": 4, "serveReceive": 9, "defense": 9, "hitting": 1, "blocking": 1, "setting": 3 }, "setterTempo": 5, "available": true },
+  { "id": "ns07", "name": "DS-A", "jersey": "7", "height": "", "hand": "R", "positions": ["DS", "OH"],  "skills": { "serving": 6, "serveReceive": 8, "defense": 8, "hitting": 5, "blocking": 2, "setting": 3 }, "setterTempo": 5, "available": true }
+]

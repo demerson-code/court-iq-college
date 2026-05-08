@@ -1,0 +1,12 @@
+{
+  "name": "court-iq-college",
+  "private": true,
+  "description": "Court IQ College — volleyball lineup tool. Devtools only; the app itself is plain JS / HTML / CSS with no build step.",
+  "scripts": {
+    "test": "playwright test",
+    "preview": "python -m http.server 3460"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

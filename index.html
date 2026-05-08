@@ -78,12 +78,15 @@
           <h2>Players</h2>
           <p class="hint"><span id="availCount">0</span> available · <span id="totalCount">0</span> total</p>
         </div>
-        <select class="sort-select" id="rosterSort" aria-label="Sort players">
-          <option value="avg-desc">AVG: high → low</option>
-          <option value="avg-asc">AVG: low → high</option>
-          <option value="name-asc">Name: A → Z</option>
-          <option value="name-desc">Name: Z → A</option>
-        </select>
+        <div class="section-header-actions">
+          <button class="btn btn-secondary btn-tiny" id="printRosterBtn" hidden type="button" title="Print roster sheet">🖨 Print</button>
+          <select class="sort-select" id="rosterSort" aria-label="Sort players">
+            <option value="avg-desc">AVG: high → low</option>
+            <option value="avg-asc">AVG: low → high</option>
+            <option value="name-asc">Name: A → Z</option>
+            <option value="name-desc">Name: Z → A</option>
+          </select>
+        </div>
       </div>
       <div class="player-list" id="playerList"></div>
       <button class="btn btn-add btn-add-player" id="addPlayerBtn">+ Add Player</button>
@@ -127,6 +130,7 @@
           </label>
           <button class="btn btn-primary" id="generateBtn">⚡ Generate Lineup</button>
           <button class="btn btn-secondary btn-tiny" id="clearOverridesBtn" hidden title="Clear all manual pin overrides">Clear pins</button>
+          <button class="btn btn-secondary btn-tiny" id="printLineupBtn" hidden type="button" title="Print this lineup chart">🖨 Print</button>
         </div>
         <div class="lineup-status" id="lineupStatus"></div>
 
@@ -247,6 +251,9 @@
 
   <!-- Toast notification -->
   <div class="toast" id="toast" hidden></div>
+
+  <!-- Print sheet (hidden onscreen; revealed only inside @media print) -->
+  <div id="printSheet" aria-hidden="true"></div>
 
   <!-- Confirm modal -->
   <div class="modal" id="confirmModal" hidden>
