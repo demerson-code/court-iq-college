@@ -14,7 +14,15 @@
     <div class="topbar-row">
       <div class="brand-row">
         <span class="ball">🏐</span>
-        <h1 class="brand">Court IQ — Marshall Thundering Herd</h1>
+        <h1 class="brand">Court IQ — <span
+          class="brand-team-name"
+          id="teamNameDisplay"
+          contenteditable="true"
+          spellcheck="false"
+          role="textbox"
+          aria-label="Team name (click to edit)"
+          title="Click to edit team name"
+        >Marshall Thundering Herd</span></h1>
       </div>
       <button class="icon-btn" id="shareBtn" title="Copy share link" aria-label="Share">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
@@ -81,6 +89,8 @@
       <button class="btn btn-add btn-add-player" id="addPlayerBtn">+ Add Player</button>
       <div class="empty-state" id="rosterEmpty" hidden>
         <p>No players yet — tap <strong>+ Add Player</strong> below to start your roster.</p>
+        <p class="hint">Or load a 13-player demo to try out the lineup builder:</p>
+        <button class="btn btn-secondary" id="loadDemoBtn" type="button">Load Demo Roster</button>
       </div>
     </section>
 

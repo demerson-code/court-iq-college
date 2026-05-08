@@ -99,7 +99,7 @@ const STORAGE_KEY = 'court_iq_college_v1';
 const LEGACY_KEY = 'court_iq_v1'; // youth-rec collision; one-time migrate
 
 /* ===== State ===== */
-const TEAM_NAME = 'College';   // TODO: replace with friend's actual college team name
+const DEFAULT_TEAM_NAME = 'Marshall Thundering Herd';
 
 function defaultSettings() {
   return { ruleset: 'rec', system: '5-1', showJersey: false, showSetterTempo: false };
@@ -148,7 +148,7 @@ function defaultScrimmage() {
 }
 
 let S = {
-  teamName: TEAM_NAME,
+  teamName: DEFAULT_TEAM_NAME,
   players: [],
   weights: defaultWeights(),
   settings: defaultSettings(),
@@ -361,8 +361,9 @@ function load() {
 
 function applyLoadedState(data) {
   if (!data) return;
-  // Team name is fixed for this season — keep TEAM_NAME regardless of incoming data
-  S.teamName = TEAM_NAME;
+  if (typeof data.teamName === 'string' && data.teamName.trim()) {
+    S.teamName = data.teamName.trim();
+  }
   if (Array.isArray(data.players)) {
     S.players = data.players.map(raw => {
       // First migrate any youth-rec / v1 records to the college shape, then
@@ -446,22 +447,38 @@ function sortByMode(items, mode, getName, getAvg) {
 }
 
 /* ===== URL encoding (compact base64url JSON) =====
-   Block 4 will replace this with a versioned (v:2) format. For Block 1 we
-   extend the existing payload with optional fields so refresh-via-URL
-   round-trips the new player shape without data loss. */
+   v2 envelope: { v:2, t, p[], w[], cfg, ln, e }.
+     - Players are encoded as compact tuples (positional, no key names) and
+       carry their `id` so lineup overrides / pairings / libero / sub-patterns
+       (which reference player IDs) survive a round-trip.
+     - Scrimmage state, currentTab, and sort prefs are deliberately NOT
+       included — those are local "tonight" preferences that shouldn't follow
+       a coach's link to another coach's device.
+   Legacy decoder accepts the Block 1 ad-hoc shape (object-form players with
+   n/s/a/pos/h/ht/j/st keys) so any link generated before v2 still loads. */
+const SHARE_VERSION = 2;
+// Player tuple indices: [id, name, positions, hand, height, jersey, skillsArr, setterTempo, available]
+const PT = { ID:0, NAME:1, POS:2, HAND:3, HEIGHT:4, JERSEY:5, SKILLS:6, TEMPO:7, AVAIL:8 };
+
+function compactPlayer(p) {
+  return [
+    p.id || genId(),
+    p.name || '',
+    p.positions || ['OH', null],
+    p.hand === 'L' ? 'L' : 'R',
+    p.height || '',
+    p.jersey || '',
+    SKILLS.map(k => p.skills[k] | 0),
+    typeof p.setterTempo === 'number' ? p.setterTempo : 5,
+    p.available ? 1 : 0
+  ];
+}
+
 function encodeStateForUrl() {
   const compact = {
+    v: SHARE_VERSION,
     t: S.teamName || undefined,
-    p: S.players.map(p => ({
-      n: p.name || '',
-      s: SKILLS.map(k => p.skills[k] | 0),
-      a: p.available ? 1 : 0,
-      pos: p.positions || ['OH', null],
-      h: p.hand === 'L' ? 'L' : 'R',
-      ht: p.height || '',
-      j: p.jersey || '',
-      st: typeof p.setterTempo === 'number' ? p.setterTempo : 5
-    })),
+    p: S.players.map(compactPlayer),
     w: SKILLS.map(k => S.weights[k] | 0),
     cfg: S.settings,
     ln: S.lineup,
@@ -473,37 +490,79 @@ function encodeStateForUrl() {
 function readStateFromUrl() {
   const m = window.location.hash.match(/^#d=(.+)$/);
   if (!m) return null;
-  try {
-    const c = JSON.parse(b64urlDecode(m[1]));
-    return {
-      teamName: c.t || '',
-      players: (c.p || []).map(p => {
-        const skills = {};
-        SKILLS.forEach((k, i) => skills[k] = (p.s && p.s[i]) || 5);
-        return {
-          id: genId(),
-          name: p.n || '',
-          jersey: p.j || '',
-          height: p.ht || '',
-          hand: p.h === 'L' ? 'L' : 'R',
-          positions: Array.isArray(p.pos) && p.pos.length
-            ? [p.pos[0] || 'OH', p.pos[1] || null]
-            : ['OH', null],
-          skills,
-          setterTempo: typeof p.st === 'number' ? p.st : 5,
-          available: p.a !== 0
-        };
-      }),
-      weights: (() => {
-        const w = defaultWeights();
-        SKILLS.forEach((k, i) => { if (c.w && typeof c.w[i] === 'number') w[k] = c.w[i]; });
-        return w;
-      })(),
-      settings: (c.cfg && typeof c.cfg === 'object') ? c.cfg : null,
-      lineup: (c.ln && typeof c.ln === 'object') ? c.ln : null,
-      lastEdited: typeof c.e === 'number' ? c.e : null
-    };
-  } catch (e) { return null; }
+  let c;
+  try { c = JSON.parse(b64urlDecode(m[1])); } catch (e) { return null; }
+  if (!c || typeof c !== 'object') return null;
+  return c.v === 2 ? decodeShareV2(c) : decodeShareLegacy(c);
+}
+
+function decodeShareV2(c) {
+  return {
+    teamName: typeof c.t === 'string' ? c.t : '',
+    players: Array.isArray(c.p) ? c.p.map(tuple => {
+      if (!Array.isArray(tuple)) return null;
+      const skillsArr = tuple[PT.SKILLS] || [];
+      const skills = {};
+      SKILLS.forEach((k, i) => skills[k] = (typeof skillsArr[i] === 'number') ? skillsArr[i] : 5);
+      const pos = tuple[PT.POS];
+      return {
+        id: typeof tuple[PT.ID] === 'string' && tuple[PT.ID] ? tuple[PT.ID] : genId(),
+        name: tuple[PT.NAME] || '',
+        jersey: tuple[PT.JERSEY] || '',
+        height: tuple[PT.HEIGHT] || '',
+        hand: tuple[PT.HAND] === 'L' ? 'L' : 'R',
+        positions: Array.isArray(pos) && pos.length
+          ? [pos[0] || 'OH', pos[1] || null]
+          : ['OH', null],
+        skills,
+        setterTempo: typeof tuple[PT.TEMPO] === 'number' ? tuple[PT.TEMPO] : 5,
+        available: tuple[PT.AVAIL] !== 0
+      };
+    }).filter(Boolean) : [],
+    weights: decodeWeightsArray(c.w),
+    settings: (c.cfg && typeof c.cfg === 'object') ? c.cfg : null,
+    lineup: (c.ln && typeof c.ln === 'object') ? c.ln : null,
+    lastEdited: typeof c.e === 'number' ? c.e : null
+  };
+}
+
+// Block 1 ad-hoc / pre-v2 shape: players are objects with n/s/a/pos/h/ht/j/st.
+// No player IDs — pairings/overrides/libero/subPatterns can't bind to players
+// in this format, so they're effectively reset (matches the pre-v2 behavior).
+// migratePlayer in applyLoadedState upgrades any older youth-rec records.
+function decodeShareLegacy(c) {
+  return {
+    teamName: c.t || '',
+    players: (c.p || []).map(p => {
+      const skills = {};
+      SKILLS.forEach((k, i) => skills[k] = (p.s && p.s[i]) || 5);
+      return {
+        id: genId(),
+        name: p.n || '',
+        jersey: p.j || '',
+        height: p.ht || '',
+        hand: p.h === 'L' ? 'L' : 'R',
+        positions: Array.isArray(p.pos) && p.pos.length
+          ? [p.pos[0] || 'OH', p.pos[1] || null]
+          : ['OH', null],
+        skills,
+        setterTempo: typeof p.st === 'number' ? p.st : 5,
+        available: p.a !== 0
+      };
+    }),
+    weights: decodeWeightsArray(c.w),
+    settings: (c.cfg && typeof c.cfg === 'object') ? c.cfg : null,
+    lineup: (c.ln && typeof c.ln === 'object') ? c.ln : null,
+    lastEdited: typeof c.e === 'number' ? c.e : null
+  };
+}
+
+function decodeWeightsArray(arr) {
+  const w = defaultWeights();
+  if (Array.isArray(arr)) {
+    SKILLS.forEach((k, i) => { if (typeof arr[i] === 'number') w[k] = arr[i]; });
+  }
+  return w;
 }
 
 function b64urlEncode(str) {
@@ -649,6 +708,13 @@ function updateLastEditedDisplay() {
   // Re-tick every minute so the relative time stays accurate
   clearTimeout(lastEditedDisplayTimer);
   lastEditedDisplayTimer = setTimeout(updateLastEditedDisplay, 60_000);
+}
+
+function renderTeamName() {
+  const el = document.getElementById('teamNameDisplay');
+  if (!el) return;
+  const target = S.teamName || DEFAULT_TEAM_NAME;
+  if ((el.textContent || '') !== target) el.textContent = target;
 }
 
 /* ===== Share modal ===== */
@@ -1602,35 +1668,35 @@ if (typeof window !== 'undefined') {
   window.SYSTEM_REQUIREMENTS = SYSTEM_REQUIREMENTS;
 }
 
-/* ===== Dev-only roster loader =====
-   Block 4 will replace this with a proper "Load Demo Roster" button + a
-   richer demo. For now: call window.loadDevRoster() from the DevTools
-   console to populate a 13-player roster covering both 5-1 and 6-2 needs. */
-const _DEV_ROSTER = [
-  ['Player 1',  ['OH', 'DS'],  [6, 7, 6, 7, 4, 3]],
-  ['Player 2',  ['OH', null],  [7, 7, 6, 8, 5, 3]],
-  ['Player 3',  ['MB', null],  [5, 3, 5, 7, 9, 2]],
-  ['Player 4',  ['MB', 'OPP'], [6, 3, 5, 8, 8, 2]],
-  ['Player 5',  ['S',  null],  [7, 5, 7, 4, 4, 9]],
-  ['Player 6',  ['OPP', 'OH'], [8, 5, 6, 9, 7, 3]],
-  ['Player 7',  ['L',  null],  [4, 9, 9, 1, 1, 3]],
-  ['Player 8',  ['DS', 'OH'],  [6, 8, 8, 5, 2, 3]],
-  ['Player 9',  ['OH', 'DS'],  [5, 6, 6, 6, 4, 3]],
-  ['Player 10', ['MB', null],  [5, 3, 4, 6, 7, 2]],
-  ['Player 11', ['S',  'DS'],  [6, 6, 7, 3, 3, 7]],
-  ['Player 12', ['OPP','MB'],  [7, 4, 5, 7, 6, 2]],
-  ['Player 13', ['DS', 'L'],   [5, 8, 7, 3, 1, 3]]
+/* ===== Demo roster =====
+   13 generic players covering all 6 roles with enough depth for both 5-1 and
+   6-2 systems. Wired to the "Load Demo Roster" button in the empty roster
+   state — gives a coach trying the tool an instant, fully-functional team. */
+const DEMO_ROSTER = [
+  { name: 'Player 1',  positions: ['OH', 'DS'],  skills: { serving: 6, serveReceive: 7, defense: 6, hitting: 7, blocking: 4, setting: 3 } },
+  { name: 'Player 2',  positions: ['OH', null],  skills: { serving: 7, serveReceive: 7, defense: 6, hitting: 8, blocking: 5, setting: 3 } },
+  { name: 'Player 3',  positions: ['MB', null],  skills: { serving: 5, serveReceive: 3, defense: 5, hitting: 7, blocking: 9, setting: 2 } },
+  { name: 'Player 4',  positions: ['MB', 'OPP'], skills: { serving: 6, serveReceive: 3, defense: 5, hitting: 8, blocking: 8, setting: 2 } },
+  { name: 'Player 5',  positions: ['S',  null],  skills: { serving: 7, serveReceive: 5, defense: 7, hitting: 4, blocking: 4, setting: 9 }, setterTempo: 8 },
+  { name: 'Player 6',  positions: ['OPP', 'OH'], skills: { serving: 8, serveReceive: 5, defense: 6, hitting: 9, blocking: 7, setting: 3 } },
+  { name: 'Player 7',  positions: ['L',  null],  skills: { serving: 4, serveReceive: 9, defense: 9, hitting: 1, blocking: 1, setting: 3 } },
+  { name: 'Player 8',  positions: ['DS', 'OH'],  skills: { serving: 6, serveReceive: 8, defense: 8, hitting: 5, blocking: 2, setting: 3 } },
+  { name: 'Player 9',  positions: ['OH', 'DS'],  skills: { serving: 5, serveReceive: 6, defense: 6, hitting: 6, blocking: 4, setting: 3 } },
+  { name: 'Player 10', positions: ['MB', null],  skills: { serving: 5, serveReceive: 3, defense: 4, hitting: 6, blocking: 7, setting: 2 } },
+  { name: 'Player 11', positions: ['S',  'DS'],  skills: { serving: 6, serveReceive: 6, defense: 7, hitting: 3, blocking: 3, setting: 7 }, setterTempo: 6 },
+  { name: 'Player 12', positions: ['OPP', 'MB'], skills: { serving: 7, serveReceive: 4, defense: 5, hitting: 7, blocking: 6, setting: 2 } },
+  { name: 'Player 13', positions: ['DS', 'L'],   skills: { serving: 5, serveReceive: 8, defense: 7, hitting: 3, blocking: 1, setting: 3 } }
 ];
-function loadDevRoster() {
-  S.players = _DEV_ROSTER.map(([name, positions, sk]) => ({
-    ...createPlayer(name, positions),
-    skills: { serving: sk[0], serveReceive: sk[1], defense: sk[2], hitting: sk[3], blocking: sk[4], setting: sk[5] }
+
+function loadDemoRoster() {
+  S.players = DEMO_ROSTER.map(d => ({
+    ...createPlayer(d.name, d.positions),
+    skills: { ...d.skills },
+    setterTempo: typeof d.setterTempo === 'number' ? d.setterTempo : 5
   }));
-  if (typeof save === 'function') save();
-  if (typeof renderRoster === 'function') renderRoster();
-  console.log(`Loaded ${S.players.length} dev roster players. Switch to Lineup tab and click Generate.`);
+  save();
+  renderRoster();
 }
-if (typeof window !== 'undefined') window.loadDevRoster = loadDevRoster;
 
 /* ===== Drag & Drop ===== */
 let dragState = null;
@@ -3010,7 +3076,34 @@ async function confirmDelete(player) {
 function init() {
   const loadResult = load();
 
-  // Team name is fixed (Panthers); no input wiring needed
+  // Editable team name in the topbar brand. The "Court IQ — " prefix is
+  // fixed; only the team-name span is contenteditable. Commit on blur or
+  // Enter; Escape reverts. Empty string falls back to the default.
+  const teamNameEl = $('#teamNameDisplay');
+  if (teamNameEl) {
+    renderTeamName();
+    const commit = () => {
+      const newName = (teamNameEl.textContent || '').trim() || DEFAULT_TEAM_NAME;
+      if (newName !== S.teamName) {
+        S.teamName = newName;
+        save();
+        updateLastEditedDisplay();
+      }
+      // Always re-sync DOM to canonical value (collapses whitespace, etc.)
+      teamNameEl.textContent = S.teamName;
+    };
+    teamNameEl.addEventListener('blur', commit);
+    teamNameEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        teamNameEl.blur();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        teamNameEl.textContent = S.teamName;
+        teamNameEl.blur();
+      }
+    });
+  }
 
   $$('.tab').forEach(tab => {
     tab.addEventListener('click', () => setTab(tab.dataset.tab));
@@ -3030,6 +3123,11 @@ function init() {
       card.scrollIntoView({ behavior: 'smooth', block: 'center' });
       if (input) input.focus();
     });
+  });
+
+  $('#loadDemoBtn')?.addEventListener('click', () => {
+    loadDemoRoster();
+    toast('Demo roster loaded — switch to the Lineup tab and tap Generate.');
   });
 
   // Topbar settings: ruleset / system / jersey toggle / setter-tempo toggle
