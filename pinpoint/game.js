@@ -26,39 +26,28 @@
   const BEST_KEY = 'pinpoint_best_v1';
 
   // ---- map geometry -----------------------------------------------------
-  // Natural Earth projection (Šavrič et al., the d3-geo polynomial), cropped
-  // to the inhabited band. "Map units" are pixels at zoom 1 of a reference
-  // canvas 3600 units wide.
+  // Web Mercator (the Google Maps projection), cropped to the inhabited band.
+  // "Map units" are pixels at zoom 1 of a reference canvas 3600 units wide.
   const D2R = Math.PI / 180, R2D = 180 / Math.PI;
   const LAT_MAX = 84, LAT_MIN = -58;
-  function neRaw(lam, phi) {
-    const p2 = phi * phi, p4 = p2 * p2;
-    return [lam * (0.8707 - 0.131979 * p2 + p4 * (-0.013791 + p4 * (0.003971 * p2 - 0.001529 * p4))),
-            phi * (1.007226 + p2 * (0.015085 + p4 * (-0.044475 + 0.028874 * p2 - 0.005916 * p4)))];
+  function mercRaw(lam, phi) {
+    return [lam, Math.log(Math.tan(Math.PI / 4 + phi / 2))];
   }
-  function neInvert(x, y) {
-    let phi = y, i = 25, d;
-    do {
-      const p2 = phi * phi, p4 = p2 * p2;
-      d = (phi * (1.007226 + p2 * (0.015085 + p4 * (-0.044475 + 0.028874 * p2 - 0.005916 * p4))) - y) /
-          (1.007226 + p2 * (0.015085 * 3 + p4 * (-0.044475 * 7 + 0.028874 * 9 * p2 - 0.005916 * 11 * p4)));
-      phi -= d;
-    } while (Math.abs(d) > 1e-7 && --i > 0);
-    const p2 = phi * phi, p4 = p2 * p2;
-    return [x / (0.8707 - 0.131979 * p2 + p4 * (-0.013791 + p4 * (0.003971 * p2 - 0.001529 * p4))), phi];
+  function mercInvert(x, y) {
+    return [x, 2 * Math.atan(Math.exp(y)) - Math.PI / 2];
   }
-  const XMAX = neRaw(Math.PI, 0)[0];
-  const YTOP = neRaw(0, LAT_MAX * D2R)[1], YBOT = neRaw(0, LAT_MIN * D2R)[1];
+  const XMAX = Math.PI;
+  const YTOP = mercRaw(0, LAT_MAX * D2R)[1], YBOT = mercRaw(0, LAT_MIN * D2R)[1];
   const K = 3600 / (2 * XMAX);
   const MW = 2 * XMAX * K, MH = (YTOP - YBOT) * K;
   // lon/lat degrees -> map units
   function proj(lon, lat) {
-    const [x, y] = neRaw(lon * D2R, lat * D2R);
+    const [x, y] = mercRaw(lon * D2R, Math.max(LAT_MIN, Math.min(LAT_MAX, lat)) * D2R);
     return [(x + XMAX) * K, (YTOP - y) * K];
   }
   // map units -> [lon, lat] degrees, or null when outside the drawn globe
   function unproj(x, y) {
-    const [lam, phi] = neInvert(x / K - XMAX, YTOP - y / K);
+    const [lam, phi] = mercInvert(x / K - XMAX, YTOP - y / K);
     const lon = lam * R2D, lat = phi * R2D;
     if (!(lon >= -180 && lon <= 180 && lat >= LAT_MIN && lat <= LAT_MAX)) return null;
     return [lon, lat];
