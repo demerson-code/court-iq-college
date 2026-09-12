@@ -244,40 +244,70 @@
     draw();
   }
 
-  function fitAll() {
-    V.s = V.sMin;
-    V.ox = (V.w - MW * V.s) / 2;
-    V.oy = (V.h - MH * V.s) / 2;
-  }
+  // Every view change goes through animateTo(), which eases from the current
+  // view to a target over a few hundred ms. Drag and pinch set V directly.
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let anim = null;   // {from, to, t0, ms}
+  let goal = null;   // where the view is heading (wheel notches stack on this)
+  let raf = 0;
 
-  function clampView() {
-    V.s = Math.min(V.sMax, Math.max(V.sMin, V.s));
-    const mw = MW * V.s, mh = MH * V.s;
-    V.ox = mw <= V.w ? (V.w - mw) / 2 : Math.min(0, Math.max(V.w - mw, V.ox));
-    V.oy = mh <= V.h ? (V.h - mh) / 2 : Math.min(0, Math.max(V.h - mh, V.oy));
+  function clamped(v) {
+    const s = Math.min(V.sMax, Math.max(V.sMin, v.s));
+    const mw = MW * s, mh = MH * s;
+    return {
+      s,
+      ox: mw <= V.w ? (V.w - mw) / 2 : Math.min(0, Math.max(V.w - mw, v.ox)),
+      oy: mh <= V.h ? (V.h - mh) / 2 : Math.min(0, Math.max(V.h - mh, v.oy)),
+    };
   }
+  function clampView() { Object.assign(V, clamped(V)); }
+  function stopAnim() { anim = null; goal = null; }
 
-  function zoomAt(px, py, factor) {
-    const ns = Math.min(V.sMax, Math.max(V.sMin, V.s * factor));
-    const k = ns / V.s;
-    V.ox = px - (px - V.ox) * k;
-    V.oy = py - (py - V.oy) * k;
-    V.s = ns;
+  function animateTo(to, ms) {
+    to = clamped(to);
+    if (reduceMotion || !ms) { stopAnim(); Object.assign(V, to); draw(); return; }
+    anim = { from: { s: V.s, ox: V.ox, oy: V.oy }, to, t0: performance.now(), ms };
+    goal = to;
+    if (!raf) raf = requestAnimationFrame(tick);
+  }
+  function tick(now) {
+    raf = 0;
+    if (!anim) return;
+    const p = Math.min(1, (now - anim.t0) / anim.ms);
+    const e = 1 - Math.pow(1 - p, 3); // ease-out cubic
+    const { from, to } = anim;
+    V.s = from.s * Math.pow(to.s / from.s, e);
+    V.ox = from.ox + (to.ox - from.ox) * e;
+    V.oy = from.oy + (to.oy - from.oy) * e;
     clampView();
     draw();
+    if (p < 1) raf = requestAnimationFrame(tick); else stopAnim();
+  }
+
+  function fitTarget() {
+    const s = V.sMin;
+    return { s, ox: (V.w - MW * s) / 2, oy: (V.h - MH * s) / 2 };
+  }
+  function fitAll() { Object.assign(V, fitTarget()); stopAnim(); }
+
+  // Zoom about a screen point. Stacks on the pending goal so fast wheel
+  // notches accumulate instead of fighting the animation.
+  function zoomAt(px, py, factor, ms = 220) {
+    const base = goal || V;
+    const ns = Math.min(V.sMax, Math.max(V.sMin, base.s * factor));
+    const k = ns / base.s;
+    animateTo({ s: ns, ox: px - (px - base.ox) * k, oy: py - (py - base.oy) * k }, ms);
   }
 
   // Frame a set of map-unit points with padding (used after a guess).
-  function fitPoints(pts) {
+  function fitPointsTarget(pts) {
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
     const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
     const bw = Math.max(60, x1 - x0), bh = Math.max(60, y1 - y0);
     const pad = 0.28;
-    V.s = Math.min(V.sMax, Math.max(V.sMin,
+    const s = Math.min(V.sMax, Math.max(V.sMin,
       Math.min(V.w / (bw * (1 + 2 * pad)), (V.h * 0.72) / (bh * (1 + 2 * pad)))));
-    V.ox = V.w / 2 - ((x0 + x1) / 2) * V.s;
-    V.oy = V.h * 0.42 - ((y0 + y1) / 2) * V.s;
-    clampView();
+    return { s, ox: V.w / 2 - ((x0 + x1) / 2) * s, oy: V.h * 0.42 - ((y0 + y1) / 2) * s };
   }
 
   const toMap = (px, py) => [(px - V.ox) / V.s, (py - V.oy) / V.s];
@@ -395,7 +425,7 @@
     G.target = pickTarget();
     G.guess = null;
     G.phase = 'guess';
-    fitAll();
+    animateTo(fitTarget(), 450);
     renderHud();
     show(ui.prompt); hide(ui.result); hide(ui.start); hide(ui.over);
     ui.promptName.textContent = G.target.name;
@@ -418,8 +448,7 @@
     G.score += pts;
     G.phase = pts >= need ? 'result' : 'over';
 
-    fitPoints([proj(lon, lat), proj(t.lon, t.lat), ...t.geo.bbox]);
-    draw();
+    animateTo(fitPointsTarget([proj(lon, lat), proj(t.lon, t.lat), ...t.geo.bbox]), 600);
     hide(ui.prompt);
     showResult(pts, need, mi, inside);
     renderHud();
@@ -505,7 +534,7 @@
       ui.promptName.textContent = t.name;
       ui.promptSub.textContent = `Round ${G.round} · need ${fmt(barFor(G.round))} pts`;
     } else {
-      fitPoints([proj(G.guess.lon, G.guess.lat), proj(t.lon, t.lat), ...t.geo.bbox]);
+      Object.assign(V, clamped(fitPointsTarget([proj(G.guess.lon, G.guess.lat), proj(t.lon, t.lat), ...t.geo.bbox])));
       showResult(G.guess.pts, barFor(G.round), G.guess.mi, G.guess.inside);
     }
     draw();
@@ -521,6 +550,7 @@
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.size === 1) {
+      if (anim) { stopAnim(); }
       drag = { x: e.clientX, y: e.clientY, ox: V.ox, oy: V.oy, moved: false, id: e.pointerId };
     } else if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
@@ -537,14 +567,18 @@
       const [a, b] = [...pointers.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y);
       const midX = (a.x + b.x) / 2 - rect.left, midY = (a.y + b.y) / 2 - rect.top;
-      const target = Math.min(V.sMax, Math.max(V.sMin, pinch.s * (d / pinch.d)));
-      zoomAt(midX, midY, target / V.s);
+      stopAnim();
+      const ns = Math.min(V.sMax, Math.max(V.sMin, pinch.s * (d / pinch.d)));
+      const k = ns / V.s;
+      V.ox = midX - (midX - V.ox) * k; V.oy = midY - (midY - V.oy) * k; V.s = ns;
+      clampView(); draw();
       return;
     }
     if (drag && e.pointerId === drag.id) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (!drag.moved && Math.hypot(dx, dy) > 6) drag.moved = true;
       if (drag.moved) {
+        stopAnim();
         V.ox = drag.ox + dx; V.oy = drag.oy + dy;
         clampView(); draw();
       }
@@ -570,12 +604,12 @@
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
     const factor = Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0018));
-    zoomAt(e.clientX - rect.left, e.clientY - rect.top, factor);
+    zoomAt(e.clientX - rect.left, e.clientY - rect.top, factor, 200);
   }, { passive: false });
 
-  ui.zoomIn.addEventListener('click', () => zoomAt(V.w / 2, V.h / 2, 1.6));
-  ui.zoomOut.addEventListener('click', () => zoomAt(V.w / 2, V.h / 2, 1 / 1.6));
-  ui.zoomFit.addEventListener('click', () => { fitAll(); draw(); });
+  ui.zoomIn.addEventListener('click', () => zoomAt(V.w / 2, V.h / 2, 1.6, 280));
+  ui.zoomOut.addEventListener('click', () => zoomAt(V.w / 2, V.h / 2, 1 / 1.6, 280));
+  ui.zoomFit.addEventListener('click', () => animateTo(fitTarget(), 400));
 
   ui.startBtn.addEventListener('click', startGame);
   ui.resBtn.addEventListener('click', advance);
@@ -587,9 +621,9 @@
       if (G.phase === 'result' || (G.phase === 'over' && ui.over.hidden)) { e.preventDefault(); advance(); }
       else if (G.phase === 'start') { e.preventDefault(); startGame(); }
     }
-    if (e.key === '+' || e.key === '=') zoomAt(V.w / 2, V.h / 2, 1.4);
-    if (e.key === '-' || e.key === '_') zoomAt(V.w / 2, V.h / 2, 1 / 1.4);
-    if (e.key === '0') { fitAll(); draw(); }
+    if (e.key === '+' || e.key === '=') zoomAt(V.w / 2, V.h / 2, 1.4, 240);
+    if (e.key === '-' || e.key === '_') zoomAt(V.w / 2, V.h / 2, 1 / 1.4, 240);
+    if (e.key === '0') animateTo(fitTarget(), 400);
   });
 
   window.addEventListener('resize', resize);
