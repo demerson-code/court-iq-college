@@ -92,28 +92,67 @@ test('teach at the miss: borders come from the map, islands get nearest capitals
   await expect(page.locator('#resLearn')).toBeHidden();
 });
 
-test('hint: one per round, costs 1,500 off that pin, comes back next round', async ({ page }) => {
+test('explore: tapping a country during the reveal shows its name, capital and neighbors', async ({ page }) => {
+  await page.evaluate(() => window.PP.setPrefs({ mode: 'countries', region: 'world', timer: false, teach: true }));
+  await page.click('#startBtn'); await page.click('#introBtn');
+  await page.evaluate(() => { const G = window.PP.state(); window.PP.guessLatLon(G.target.lat, G.target.lon); });
+  // tap on Chad's capital location: Chad becomes the explored country
+  await page.evaluate(() => window.PP.exploreLatLon(12.13, 15.05));
+  const s = await page.evaluate(() => { const G = window.PP.state(); return { name: G.explore && G.explore.name, tagHidden: document.getElementById('exploreTag').hidden }; });
+  expect(s.name).toBe('Chad');
+  expect(s.tagHidden).toBe(false);
+  await expect(page.locator('#exploreName')).toHaveText('Chad');
+  await expect(page.locator('#exploreCap')).toHaveText("Capital: N'Djamena");
+  // tapping the sea leaves it showing
+  await page.evaluate(() => window.PP.exploreLatLon(0, -30));
+  await expect(page.locator('#exploreName')).toHaveText('Chad');
+
+  // a wrong pin that lands in another country shows that country automatically
+  await page.waitForTimeout(550); await page.click('#resBtn');
+  const auto = await page.evaluate(() => {
+    const G = window.PP.state();
+    // put the pin on Brazil's capital unless Brazil is the target, then use Russia's
+    const t = G.target.mapName === 'Brazil' ? [55.76, 37.62] : [-15.79, -47.88];
+    window.PP.guessLatLon(t[0], t[1]);
+    return { explore: G.explore && G.explore.name, kicker: document.getElementById('exploreKicker').textContent };
+  });
+  expect(['Brazil', 'Russia']).toContain(auto.explore);
+  expect(auto.kicker).toBe('Your pin landed in');
+});
+
+test('hints: three a round, one per pin, counter counts up, back to three next round', async ({ page }) => {
   test.setTimeout(45_000);
   await page.evaluate(() => window.PP.setPrefs({ mode: 'countries', region: 'world', timer: false, teach: true }));
   await page.click('#startBtn'); await page.click('#introBtn');
+  await expect(page.locator('#hintCount')).toHaveText('3 this round');
+  for (let i = 1; i <= 3; i++) {
+    await expect(page.locator('#hintBtn')).toBeEnabled();
+    await page.click('#hintBtn');
+    await expect(page.locator('#hintText')).toBeVisible();
+    const s = await page.evaluate(() => { const G = window.PP.state(); window.PP.useHint(); window.PP.guessLatLon(G.target.lat, G.target.lon); return { pts: G.guess.pts, used: G.hintsUsed }; });
+    expect(s.pts).toBe(3500);      // a second press on the same pin does nothing
+    expect(s.used).toBe(i);
+    await expect(page.locator('#resHint')).toContainText('1,500 hint');
+    await page.waitForTimeout(550); await page.click('#resBtn');
+  }
+  await expect(page.locator('#hintCount')).toHaveText('Used 3 of 3');
+  await expect(page.locator('#hintBtn')).toBeDisabled();
+  for (let i = 4; i <= 7; i++) {
+    const s = await page.evaluate(() => { const G = window.PP.state(); window.PP.useHint(); window.PP.guessLatLon(G.target.lat, G.target.lon); return { pts: G.guess.pts }; });
+    expect(s.pts).toBe(5000);
+    await page.waitForTimeout(550); await page.click('#resBtn');
+  }
+  await page.click('#introBtn'); // round 2
+  await expect(page.locator('#hintCount')).toHaveText('3 this round');
   await expect(page.locator('#hintBtn')).toBeEnabled();
   await page.click('#hintBtn');
-  await expect(page.locator('#hintText')).toBeVisible();
-  await expect(page.locator('#hintText')).not.toHaveText('');
-  let s = await page.evaluate(() => { const G = window.PP.state(); window.PP.guessLatLon(G.target.lat, G.target.lon); return { pts: G.guess.pts, hinted: G.guess.hinted }; });
-  expect(s.pts).toBe(3500);
-  expect(s.hinted).toBe(true);
-  await expect(page.locator('#resHint')).toContainText('1,500 hint');
-  // pins 2..7: the button is spent for the round
-  for (let i = 2; i <= 7; i++) {
-    await page.waitForTimeout(550); await page.click('#resBtn');
-    await expect(page.locator('#hintBtn')).toBeDisabled();
-    s = await page.evaluate(() => { const G = window.PP.state(); window.PP.useHint(); window.PP.guessLatLon(G.target.lat, G.target.lon); return { pts: G.guess.pts }; });
-    expect(s.pts).toBe(5000);
-  }
-  await page.waitForTimeout(550); await page.click('#resBtn'); // round 1 done -> announcement
-  await page.click('#introBtn');
-  await expect(page.locator('#hintBtn')).toBeEnabled();
+  await page.evaluate(() => { const G = window.PP.state(); window.PP.guessLatLon(G.target.lat, G.target.lon); });
+  await page.waitForTimeout(550); await page.click('#resBtn');
+  await expect(page.locator('#hintCount')).toHaveText('Used 1 of 3');
+  await page.click('#hintBtn');
+  await page.evaluate(() => { const G = window.PP.state(); window.PP.guessLatLon(G.target.lat, G.target.lon); });
+  await page.waitForTimeout(550); await page.click('#resBtn');
+  await expect(page.locator('#hintCount')).toHaveText('Used 2 of 3 · last one');
 });
 
 test('every listed country has a map shape and its capital sits inside it', async ({ page }) => {

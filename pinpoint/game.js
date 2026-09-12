@@ -30,7 +30,8 @@
   const AVG_STEP = 500;        // added to the per-pin pace each round
   const AVG_CAP = 4600;        // never asks for more than this per pin (200 mi)
   const MAX_DIFFICULTY = 5;    // countries.js ranks 1 (household names) .. 5 (deep cuts)
-  const HINT_COST = 1500;      // points taken off the pin a hint is used on; one hint per round
+  const HINT_COST = 1500;      // points taken off the pin a hint is used on
+  const HINTS_PER_ROUND = 3;   // one per pin, up to this many pins a round
   const ROUND_SECS = 12;       // timer mode: seconds per pin
   const SPEED_BONUS = 1000;    // timer mode: max bonus for an instant answer
   const EARTH_MI = 3958.8;
@@ -189,7 +190,7 @@
   }
 
   window.PP = { haversineMi, pointsFor, barFor, avgNeedFor, difficultyFor, celebrationLevel, milesForPoints, speedBonus, pointInRings, decodeTopo,
-    MAX_PTS, ZERO_AT_MI, BULLSEYE_MI, ROUND_SECS, PINS_PER_ROUND, CELEBRATE_MI, HINT_COST, REGIONS };
+    MAX_PTS, ZERO_AT_MI, BULLSEYE_MI, ROUND_SECS, PINS_PER_ROUND, CELEBRATE_MI, HINT_COST, HINTS_PER_ROUND, REGIONS };
 
   // ---- DOM --------------------------------------------------------------
   const $ = (id) => document.getElementById(id);
@@ -200,7 +201,7 @@
     barNeed: $('hudBarNeed'), barMiles: $('hudBarMiles'), hudMode: $('hudMode'),
     prompt: $('prompt'), promptEyebrow: $('promptEyebrow'), promptName: $('promptName'),
     promptSub: $('promptSub'), promptTimer: $('promptTimer'), promptTimerFill: $('promptTimerFill'),
-    promptTimerNum: $('promptTimerNum'), hintBtn: $('hintBtn'), hintText: $('hintText'), resHint: $('resHint'),
+    promptTimerNum: $('promptTimerNum'), hintBtn: $('hintBtn'), hintCount: $('hintCount'), hintText: $('hintText'), resHint: $('resHint'),
     result: $('result'), resTitle: $('resTitleText'), resDetail: $('resDetail'),
     resPts: $('resPts'), resPtsNum: $('resPtsNum'), resBonus: $('resBonus'), resFill: $('resFill'), resNeed: $('resNeed'), resBtn: $('resBtn'),
     start: $('start'), startBtn: $('startBtn'), startBest: $('startBest'), options: $('options'),
@@ -214,6 +215,7 @@
     fx: $('fx'), stamp: $('stamp'), stampT: $('stampT'), stampS: $('stampS'), flash: $('flash'),
     resChip: $('resChip'), stage: document.querySelector('.stage'),
     resLearn: $('resLearn'), resFlag: $('resFlag'), resHook: $('resHook'), resNear: $('resNear'),
+    exploreTag: $('exploreTag'), exploreKicker: $('exploreKicker'), exploreName: $('exploreName'), exploreCap: $('exploreCap'), exploreHook: $('exploreHook'),
   };
 
   // ---- data -------------------------------------------------------------
@@ -296,7 +298,7 @@
     'Fr. Polynesia': 'French Polynesia', 'St-Martin': 'Saint Martin', 'St-Barthélemy': 'Saint Barthélemy', 'Siachen Glacier': 'Siachen Glacier' };
   const displayName = (geo) => (rosterByMap.get(geo.name) || {}).name || EXTRA_NAMES[geo.name] || geo.name;
   // What to teach for a target: bordering countries, or the nearest capitals for an island.
-  const NOT_A_COUNTRY = new Set(['Antarctica', 'Siachen Glacier']);
+  const NOT_A_COUNTRY = new Set(['Antarctica', 'Siachen Glacier', 'Somaliland', 'N. Cyprus']);
   function neighborsOf(t) {
     const n = t.geo.neighbors.filter((g) => !NOT_A_COUNTRY.has(g.name));
     if (n.length) return { kind: 'borders', list: n.slice(0, 8), more: Math.max(0, n.length - 8) };
@@ -304,6 +306,28 @@
       .map((c) => ({ c, d: haversineMi(t.lat, t.lon, c.lat, c.lon) }))
       .filter((x) => x.d < 1200).sort((a, b) => a.d - b.d).slice(0, 3);
     return { kind: 'nearest', list: near.map((x) => x.c.geo), more: 0 };
+  }
+  function neighborsOfGeo(geo) {
+    const r = rosterByMap.get(geo.name);
+    if (r) return neighborsOf(r);
+    const n = geo.neighbors.filter((g) => !NOT_A_COUNTRY.has(g.name));
+    if (n.length) return { kind: 'borders', list: n.slice(0, 8), more: Math.max(0, n.length - 8) };
+    const [lon, lat] = unproj(...geo.label) || [0, 0];
+    const near = ROSTER.map((c) => ({ c, d: haversineMi(lat, lon, c.lat, c.lon) }))
+      .filter((x) => x.d < 1200 && x.c.geo !== geo).sort((a, b) => a.d - b.d).slice(0, 3);
+    return { kind: 'nearest', list: near.map((x) => x.c.geo), more: 0 };
+  }
+  // Which country shape is under a map point, if any.
+  function countryAt(x, y) {
+    const ll = unproj(x, y);
+    if (!ll) return null;
+    const [lon, lat] = ll;
+    for (const c of countries) {
+      const [[x0, y0], [x1, y1]] = c.bbox;
+      if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+      if (!NOT_A_COUNTRY.has(c.name) && pointInRings(lon, lat, c.polys)) return c;
+    }
+    return null;
   }
   function neighborSentence(n) {
     const names = n.list.map(displayName);
@@ -317,7 +341,8 @@
   const G = {
     phase: 'start',      // start | intro | guess | result | roundEnd | over
     round: 0, pin: 0, roundPts: 0, lastRoundPts: null, score: 0, used: new Set(), target: null,
-    hintRound: 0,        // round in which the one hint was spent
+    explore: null,       // country tapped on the map while a result is showing
+    hintsUsed: 0,        // hints spent this round
     hinted: false,       // hint used on the current pin
     guess: null,         // {lat, lon, mi, pts, inside, bonus, timedOut}
     history: [],         // one entry per finished pin
@@ -457,6 +482,7 @@
     grat: 'rgba(0,60,90,0.09)', hit: 'rgba(245,196,81,0.85)', hitStroke: '#8A5A00',
     guess: '#E0452F', capital: '#1B2A3A', line: 'rgba(27,42,58,0.7)',
     ringPass: '#2E8B57', ringFail: '#E0452F',
+    exploreFill: 'rgba(79,163,209,0.55)', exploreStroke: '#1F5F86',
   };
 
   function draw() {
@@ -490,28 +516,91 @@
       ctx.lineWidth = 1.5 / s;
       ctx.stroke(t.path);
     }
+    if (revealed && G.explore && G.explore !== G.target.geo) {
+      ctx.fillStyle = C.exploreFill;
+      ctx.fill(G.explore.path);
+      ctx.strokeStyle = C.exploreStroke;
+      ctx.lineWidth = 1.5 / s;
+      ctx.stroke(G.explore.path);
+    }
     ctx.restore();
 
     if (revealed && G.guess) drawMarkers();
     if (revealed && P.teach && G.target) drawTeachLabels();
+    if (revealed && G.explore) { drawExploreLabels(); positionExploreTag(); }
   }
 
   // Name the country and the countries around it, so a miss becomes a lesson.
+  function mapLabel(geo, size, weight, color, dy) {
+    const [x, y] = toScreen(...geo.label);
+    if (x < -60 || x > V.w + 60 || y < -20 || y > V.h + 20) return;
+    ctx.font = `${weight} ${size}px ${size >= 15 ? "'Bricolage Grotesque', 'Helvetica Neue', Arial, sans-serif" : "'IBM Plex Sans', 'Segoe UI', Helvetica, Arial, sans-serif"}`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(3, size / 4); ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+    ctx.strokeText(displayName(geo), x, y + dy);
+    ctx.fillStyle = color; ctx.fillText(displayName(geo), x, y + dy);
+  }
+  // Each shape gets one label: the target biggest, the tapped country next,
+  // neighbours small. A neighbour of both is drawn once.
   function drawTeachLabels() {
-    const { dpr } = V;
-    const t = G.target;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const label = (geo, size, weight, color, dy) => {
-      const [x, y] = toScreen(...geo.label);
-      if (x < -60 || x > V.w + 60 || y < -20 || y > V.h + 20) return;
-      ctx.font = `${weight} ${size}px ${size >= 15 ? "'Bricolage Grotesque', 'Helvetica Neue', Arial, sans-serif" : "'IBM Plex Sans', 'Segoe UI', Helvetica, Arial, sans-serif"}`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(3, size / 4); ctx.strokeStyle = 'rgba(255,255,255,0.92)';
-      ctx.strokeText(displayName(geo), x, y + dy);
-      ctx.fillStyle = color; ctx.fillText(displayName(geo), x, y + dy);
-    };
-    for (const g of neighborsOf(t).list) label(g, 12.5, '600', '#1F2F45', 0);
-    label(t.geo, 18, '800', '#7A4A00', -14);
+    const t = G.target, e = G.explore && G.explore !== t.geo ? G.explore : null;
+    ctx.setTransform(V.dpr, 0, 0, V.dpr, 0, 0);
+    const done = new Set([t.geo]);
+    if (e) done.add(e);
+    for (const g of neighborsOf(t).list) if (!done.has(g)) { done.add(g); mapLabel(g, 12.5, '600', '#1F2F45', 0); }
+    if (e) for (const g of neighborsOfGeo(e).list) if (!done.has(g)) { done.add(g); mapLabel(g, 12.5, '600', '#1F5F86', 0); }
+    if (e) mapLabel(e, 16, '800', '#0F3D5C', -12);
+    mapLabel(t.geo, 18, '800', '#7A4A00', -14);
+  }
+  function drawExploreLabels() {
+    if (P.teach) return; // drawTeachLabels already covered it
+    const t = G.target, e = G.explore;
+    if (!e || e === t.geo) return;
+    ctx.setTransform(V.dpr, 0, 0, V.dpr, 0, 0);
+    for (const g of neighborsOfGeo(e).list) if (g !== t.geo) mapLabel(g, 12.5, '600', '#1F5F86', 0);
+    mapLabel(e, 16, '800', '#0F3D5C', -12);
+  }
+
+  // ---- explore: tap any country while a result is up ---------------------------
+  function exploreAt(px, py) {
+    const [x, y] = toMap(px, py);
+    const geo = countryAt(x, y);
+    if (!geo) return; // sea: leave whatever is showing
+    setExplore(geo, [x, y], 'Tapped');
+  }
+  // After a wrong pin, show what country the pin actually landed in.
+  function autoExplore(g, t) {
+    if (!P.teach || g.timedOut || g.inside) return;
+    const anchor = proj(g.lon, g.lat);
+    const geo = countryAt(...anchor);
+    if (!geo || geo === t.geo) return;
+    setExplore(geo, anchor, 'Your pin landed in');
+  }
+  function setExplore(geo, anchor, kicker) {
+    G.explore = geo;
+    G.exploreAnchor = anchor;
+    const r = rosterByMap.get(geo.name);
+    ui.exploreKicker.textContent = kicker;
+    ui.exploreName.textContent = displayName(geo);
+    ui.exploreCap.textContent = r ? `Capital: ${r.capital}` : '';
+    ui.exploreHook.textContent = r ? (r.hook || '') : '';
+    ui.exploreCap.hidden = !r;
+    ui.exploreHook.hidden = !(r && r.hook);
+    ui.exploreTag.hidden = false;
+    draw();
+  }
+  function clearExplore() {
+    G.explore = null;
+    ui.exploreTag.hidden = true;
+  }
+  function positionExploreTag() {
+    if (!G.explore || ui.exploreTag.hidden) return;
+    const [sx, sy] = toScreen(...G.exploreAnchor);
+    const w = ui.exploreTag.offsetWidth, h = ui.exploreTag.offsetHeight;
+    let x = sx - w / 2, y = sy - h - 14;
+    x = Math.max(8, Math.min(V.w - w - 8, x));
+    if (y < 8) y = sy + 14;
+    ui.exploreTag.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
   }
 
   function drawMarkers() {
@@ -616,6 +705,7 @@
     G.roundPts = 0;
     G.guess = null;
     G.hinted = false;
+    G.hintsUsed = 0;
     G.phase = 'intro';
     hide(ui.prompt); hide(ui.result); hide(ui.start); hide(ui.over);
     animateTo(fitTarget(), 450);
@@ -650,6 +740,7 @@
 
   function nextPin() {
     stopCelebration();
+    clearExplore();
     G.pin += 1;
     G.target = pickTarget();
     G.guess = null;
@@ -678,16 +769,19 @@
 
   // ---- hint: one per round, costs HINT_COST off the pin it is used on ----------
   function renderHint() {
-    const spent = G.hintRound === G.round;
+    const used = G.hintsUsed, left = HINTS_PER_ROUND - used;
     ui.hintText.hidden = !G.hinted;
     ui.hintBtn.hidden = G.hinted;
-    ui.hintBtn.disabled = spent;
-    ui.hintBtn.textContent = spent ? 'Hint used this round' : `Hint (−${fmt(HINT_COST)})`;
+    ui.hintBtn.disabled = left <= 0;
+    ui.hintBtn.textContent = left <= 0 ? 'No hints left this round' : `Hint (−${fmt(HINT_COST)})`;
+    ui.hintCount.textContent = used === 0 ? `${HINTS_PER_ROUND} this round`
+      : left === 1 ? `Used ${used} of ${HINTS_PER_ROUND} · last one`
+      : `Used ${used} of ${HINTS_PER_ROUND}`;
   }
   function useHint() {
-    if (G.phase !== 'guess' || G.hintRound === G.round) return;
+    if (G.phase !== 'guess' || G.hinted || G.hintsUsed >= HINTS_PER_ROUND) return;
     const t = G.target;
-    G.hintRound = G.round;
+    G.hintsUsed += 1;
     G.hinted = true;
     const where = neighborSentence(neighborsOf(t));
     ui.hintText.textContent = (t.hook || '') + (where ? ' ' + where : '');
@@ -756,6 +850,7 @@
     animateTo(revealTarget(g, t), 600);
     hide(ui.prompt);
     showResult();
+    autoExplore(g, t);
     renderHud();
     popScore(g.pts + g.bonus);
     const level = g.timedOut ? 0 : celebrationLevel(g.mi);
@@ -1193,7 +1288,7 @@
     if (!window.claude?.hot?.snapshot) return;
     window.claude.hot.snapshot({
       phase: G.phase, round: G.round, pin: G.pin, roundPts: G.roundPts, lastRoundPts: G.lastRoundPts, score: G.score,
-      hintRound: G.hintRound, hinted: G.hinted, hintText: ui.hintText.textContent,
+      hintsUsed: G.hintsUsed, hinted: G.hinted, hintText: ui.hintText.textContent,
       used: [...G.used], target: G.target?.mapName, guess: G.guess, history: G.history,
     });
   }
@@ -1203,7 +1298,7 @@
     if (!t) return false;
     G.round = d.round; G.pin = d.pin || 1; G.roundPts = d.roundPts || 0; G.score = d.score; G.used = new Set(d.used); G.target = t;
     G.guess = d.guess; G.phase = d.phase; G.history = d.history || [];
-    G.hintRound = d.hintRound || 0; G.hinted = !!d.hinted; ui.hintText.textContent = d.hintText || '';
+    G.hintsUsed = d.hintsUsed || 0; G.hinted = !!d.hinted; ui.hintText.textContent = d.hintText || '';
     hide(ui.start); hide(ui.over); hide(ui.result); hide(ui.prompt); hide(ui.intro);
     renderHud();
     if (d.phase === 'intro') {
@@ -1272,9 +1367,10 @@
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinch = null;
     if (pointers.size === 0) {
-      if (wasTap && G.phase === 'guess' && e.type === 'pointerup') {
+      if (wasTap && e.type === 'pointerup') {
         const rect = canvas.getBoundingClientRect();
-        handleGuess(e.clientX - rect.left, e.clientY - rect.top);
+        if (G.phase === 'guess') handleGuess(e.clientX - rect.left, e.clientY - rect.top);
+        else if (G.phase === 'result' || G.phase === 'roundEnd' || (G.phase === 'over' && ui.over.hidden)) exploreAt(e.clientX - rect.left, e.clientY - rect.top);
       }
       drag = null;
     }
@@ -1346,6 +1442,8 @@
   window.PP.nextPin = nextPin;
   window.PP.beginRound = beginRound;
   window.PP.useHint = useHint;
+  window.PP.exploreLatLon = (lat, lon) => { const [px, py] = toScreen(...proj(lon, lat)); exploreAt(px, py); };
+  window.PP.clearExplore = clearExplore;
   window.PP.celebrate = (level) => { const G2 = G; const t = G2.target; celebrate(level, { mi: [400, 200, 80, 20, 3][level - 1] }, t); };
   window.PP.advance = advance;
   window.PP._viewCenter = () => toMap(V.w / 2, V.h / 2);

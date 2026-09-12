@@ -6,7 +6,7 @@ the repo root via GitHub Pages.
 
 - **Live**: https://demerson-code.github.io/court-iq-college/
 - **Local preview**: `python -m http.server 3460` → http://localhost:3460/
-- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 12 Pinpoint, ~20s)
+- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 13 Pinpoint, ~24s)
 - **Deploy**: `git push origin main` (GitHub Pages auto-deploys, 30–90s)
 - **Plan**: `PLAN.md` (untracked by intent — owns the per-block scope; don't
   duplicate it here)
@@ -32,8 +32,11 @@ difficulty min(r, 5).
   one-line memory hook per country. Teach mode (pref `teach`, default on)
   labels the target and its bordering countries on the reveal; borders come
   from shared TopoJSON arcs, islands fall back to the 3 nearest capitals.
-- Hint: one per round (`G.hintRound`), reveals hook + neighbors, costs
-  `HINT_COST` (1,500) off the pin it is used on. Key `h`.
+- Hint: up to `HINTS_PER_ROUND` (3) a round, one per pin (`G.hintsUsed`),
+  reveals hook + neighbors, costs `HINT_COST` (1,500) off that pin. Key `h`.
+- Explore: while a result is up, a tap on any country highlights it and shows
+  name / capital / hook + neighbor labels (`G.explore`). A wrong pin that lands
+  in another country does this automatically. Never needs dismissing.
 - Fanfare: five tiers by miles from the capital (500 / 250 / 100 / 25 / 5),
   particles on the `#fx` canvas over the map, text stamps + flash in the DOM.
   `CELEBRATE_MI` and `celebrate()` in game.js. Skipped under reduced motion.
