@@ -6,7 +6,7 @@ the repo root via GitHub Pages.
 
 - **Live**: https://demerson-code.github.io/court-iq-college/
 - **Local preview**: `python -m http.server 3460` → http://localhost:3460/
-- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 8 Pinpoint, ~14s)
+- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 10 Pinpoint, ~16s)
 - **Deploy**: `git push origin main` (GitHub Pages auto-deploys, 30–90s)
 - **Plan**: `PLAN.md` (untracked by intent — owns the per-block scope; don't
   duplicate it here)
@@ -28,6 +28,9 @@ difficulty min(r, 5).
   "how well an American knows it": 1 household names … 5 deep cuts.
 - `world.js` — world-atlas 50m TopoJSON, 755 KB (ISC, see LICENSE-world-atlas.txt).
   Rings crossing 180° are split at decode time or they stroke across the map.
+- Fanfare: five tiers by miles from the capital (500 / 250 / 100 / 25 / 5),
+  particles on the `#fx` canvas over the map, text stamps + flash in the DOM.
+  `CELEBRATE_MI` and `celebrate()` in game.js. Skipped under reduced motion.
 - Modes: Countries / Capitals target, region packs (EU/AM/AF/AP), optional
   12 s timer with speed bonus. Prefs key `pinpoint_prefs_v1`, best
   `pinpoint_best_v1`, local leaderboard `pinpoint_board_v1`. Inside claude.ai

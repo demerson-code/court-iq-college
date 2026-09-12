@@ -65,8 +65,9 @@
   function unproj(x, y) {
     const [lam, phi] = mercInvert(x / K - XMAX, YTOP - y / K);
     const lon = lam * R2D, lat = phi * R2D;
-    if (!(lon >= -180 && lon <= 180 && lat >= LAT_MIN && lat <= LAT_MAX)) return null;
-    return [lon, lat];
+    const e = 1e-6; // a click exactly on the map edge still counts
+    if (!(lon >= -180 - e && lon <= 180 + e && lat >= LAT_MIN - e && lat <= LAT_MAX + e)) return null;
+    return [Math.max(-180, Math.min(180, lon)), Math.max(LAT_MIN, Math.min(LAT_MAX, lat))];
   }
   // radius in map units of a circle of `mi` miles around a point at `lat`
   // (Mercator is conformal, so a circle stays a circle, scaled by sec(lat))
@@ -104,6 +105,15 @@
 
   function difficultyFor(round) {
     return Math.min(MAX_DIFFICULTY, round);
+  }
+
+  // Fanfare tiers by miles from the capital: 1 = within 500 mi ... 5 = within 5 mi.
+  const CELEBRATE_MI = [500, 250, 100, 25, 5];
+  function celebrationLevel(mi) {
+    if (mi == null) return 0;
+    let level = 0;
+    CELEBRATE_MI.forEach((m, i) => { if (mi <= m) level = i + 1; });
+    return level;
   }
 
   // Timer mode: bonus for seconds left, only on a pin that kept pace.
@@ -176,8 +186,8 @@
     });
   }
 
-  window.PP = { haversineMi, pointsFor, barFor, avgNeedFor, difficultyFor, milesForPoints, speedBonus, pointInRings, decodeTopo,
-    MAX_PTS, ZERO_AT_MI, BULLSEYE_MI, ROUND_SECS, PINS_PER_ROUND, REGIONS };
+  window.PP = { haversineMi, pointsFor, barFor, avgNeedFor, difficultyFor, celebrationLevel, milesForPoints, speedBonus, pointInRings, decodeTopo,
+    MAX_PTS, ZERO_AT_MI, BULLSEYE_MI, ROUND_SECS, PINS_PER_ROUND, CELEBRATE_MI, REGIONS };
 
   // ---- DOM --------------------------------------------------------------
   const $ = (id) => document.getElementById(id);
@@ -189,7 +199,7 @@
     prompt: $('prompt'), promptEyebrow: $('promptEyebrow'), promptName: $('promptName'),
     promptSub: $('promptSub'), promptTimer: $('promptTimer'), promptTimerFill: $('promptTimerFill'),
     promptTimerNum: $('promptTimerNum'),
-    result: $('result'), resTitle: $('resTitle'), resDetail: $('resDetail'),
+    result: $('result'), resTitle: $('resTitleText'), resDetail: $('resDetail'),
     resPts: $('resPts'), resBonus: $('resBonus'), resFill: $('resFill'), resNeed: $('resNeed'), resBtn: $('resBtn'),
     start: $('start'), startBtn: $('startBtn'), startBest: $('startBest'), options: $('options'),
     intro: $('intro'), introPrev: $('introPrev'), introRound: $('introRound'), introDiff: $('introDiff'),
@@ -199,6 +209,8 @@
     boardTitle: $('boardTitle'), boardList: $('boardList'), boardName: $('boardName'),
     boardSave: $('boardSave'), boardStatus: $('boardStatus'), boardForm: $('boardForm'),
     zoomIn: $('zoomIn'), zoomOut: $('zoomOut'), zoomFit: $('zoomFit'),
+    fx: $('fx'), stamp: $('stamp'), stampT: $('stampT'), stampS: $('stampS'), flash: $('flash'),
+    resChip: $('resChip'), stage: document.querySelector('.stage'),
   };
 
   // ---- data -------------------------------------------------------------
@@ -288,6 +300,7 @@
     V.dpr = Math.min(3, window.devicePixelRatio || 1);
     canvas.width = Math.round(V.w * V.dpr);
     canvas.height = Math.round(V.h * V.dpr);
+    ui.fx.width = canvas.width; ui.fx.height = canvas.height;
     const prevMin = V.sMin;
     V.sMin = Math.min(V.w / MW, V.h / MH);
     V.sMax = V.sMin * 24;
@@ -496,6 +509,7 @@
 
   // ---- game flow --------------------------------------------------------
   const fmt = (n) => Math.round(n).toLocaleString('en-US');
+  const fmtMi = (mi) => mi < 10 ? mi.toFixed(1) : fmt(mi);
 
   function pickTarget() {
     const all = roster();
@@ -559,6 +573,7 @@
   }
 
   function nextPin() {
+    stopCelebration();
     G.pin += 1;
     G.target = pickTarget();
     G.guess = null;
@@ -645,6 +660,8 @@
     showResult();
     renderHud();
     popScore(g.pts + g.bonus);
+    const level = g.timedOut ? 0 : celebrationLevel(g.mi);
+    if (level) celebTimer = setTimeout(() => celebrate(level, g, t), 650);
     snapshot();
   }
 
@@ -675,9 +692,13 @@
         ? (g.inside ? `Bullseye. That's ${t.name}.` : `Bullseye. Right on ${t.capital}.`)
         : onPace ? `${shown} — on pace.` : `${shown} — under pace.`;
       ui.resDetail.textContent = g.inside
-        ? `Your pin landed inside ${t.name}, ${fmt(g.mi)} mi from ${t.capital}.`
-        : `Your pin was ${fmt(g.mi)} mi from ${t.capital}${capitals ? '' : ', the capital'}.`;
+        ? `Your pin landed inside ${t.name}, ${fmtMi(g.mi)} mi from ${t.capital}.`
+        : `Your pin was ${fmtMi(g.mi)} mi from ${t.capital}${capitals ? '' : ', the capital'}.`;
     }
+    const level = g.timedOut ? 0 : celebrationLevel(g.mi);
+    ui.resChip.hidden = !level;
+    ui.resChip.textContent = level ? CELEB[level].chip : '';
+    ui.resChip.className = `chip lv${level}`;
     ui.resPts.textContent = `+${fmt(g.pts)}`;
     ui.resBonus.textContent = g.bonus ? `+${fmt(g.bonus)} speed bonus` : '';
     ui.resBonus.hidden = !g.bonus;
@@ -800,6 +821,165 @@
     renderOptions();
     renderHud();
   });
+
+  // ---- fanfare ---------------------------------------------------------------
+  // Five tiers, each louder than the last. Particles live on the #fx canvas
+  // over the map; text stamps and the screen flash are DOM elements.
+  const CELEB = {
+    1: { chip: 'Close', title: null },
+    2: { chip: 'Sharp shooting', title: null },
+    3: { chip: 'Dead on', title: 'Dead on' },
+    4: { chip: 'Bullseye', title: 'Bullseye' },
+    5: { chip: 'Pinpoint', title: 'PINPOINT!' },
+  };
+  const CONFETTI = ['#F5C451', '#E0452F', '#2E8B57', '#2F3F5C', '#FFFFFF', '#4FA3D1', '#F28C28'];
+  const fctx = ui.fx.getContext('2d');
+  let FX = [];        // live particles
+  let fxRaf = 0, fxLast = 0;
+  let celebTimer = null;
+  const timers = [];
+
+  function stopCelebration() {
+    clearTimeout(celebTimer); celebTimer = null;
+    while (timers.length) clearTimeout(timers.pop());
+    FX = [];
+    fctx.setTransform(V.dpr, 0, 0, V.dpr, 0, 0);
+    fctx.clearRect(0, 0, V.w, V.h);
+    ui.stamp.className = 'stamp';
+    ui.flash.className = 'flash';
+    ui.stage.classList.remove('shake');
+  }
+  const later = (ms, fn) => timers.push(setTimeout(fn, ms));
+
+  function celebrate(level, g, t) {
+    const anchor = proj(t.lon, t.lat);          // map units: rings track the capital while the view moves
+    const [sx, sy] = toScreen(...anchor);       // screen point for one-shot bursts
+    ui.result.classList.add('celebrate');
+    later(700, () => ui.result.classList.remove('celebrate'));
+
+    // 1 · Close: two soft pulse rings out of the capital.
+    rings(anchor, 2, C.ringPass);
+    if (level < 2) return;
+
+    // 2 · Sharp shooting: a tighter, brighter triple pulse and the score bounces.
+    rings(anchor, 3, C.capital, 1.4);
+    if (level < 3) return;
+
+    // 3 · Dead on: a gold spark burst and a stamp across the map.
+    sparks(sx, sy, 28, C.capital);
+    stamp(CELEB[3].title, `${fmtMi(g.mi)} miles from ${t.capital}`, 3);
+    if (level < 4) return;
+
+    // 4 · Bullseye: confetti cannon from the capital, gold screen flash.
+    flash(4);
+    confetti(sx, sy, 140, { spread: Math.PI * 2, speed: [220, 520] });
+    stamp(CELEB[4].title, `${fmtMi(g.mi)} miles from ${t.capital}`, 4);
+    if (level < 5) return;
+
+    // 5 · Pinpoint: the works. Confetti from both bottom corners, three
+    // fireworks in sequence, a screen shake and the big stamp.
+    stamp(CELEB[5].title, `${fmtMi(g.mi)} miles from ${t.capital}`, 5);
+    flash(5);
+    ui.stage.classList.add('shake');
+    later(600, () => ui.stage.classList.remove('shake'));
+    confetti(0, V.h, 160, { spread: Math.PI / 3, dir: -Math.PI / 3, speed: [500, 900] });
+    confetti(V.w, V.h, 160, { spread: Math.PI / 3, dir: -Math.PI * 2 / 3, speed: [500, 900] });
+    [0, 450, 900].forEach((d, i) => later(d, () =>
+      firework(V.w * (0.3 + 0.2 * i), V.h * 0.32 + (i === 1 ? -40 : 30), CONFETTI[(i * 2) % CONFETTI.length])));
+    later(1500, () => confetti(V.w / 2, -10, 120, { spread: Math.PI / 2, dir: Math.PI / 2, speed: [60, 200], gravity: 320 }));
+  }
+
+  // -- emitters --
+  function rings(anchor, n, color, width = 2) {
+    for (let i = 0; i < n; i++) spawn({ kind: 'ring', anchor, color, width, delay: i * 180, dur: 900, r1: 70 + i * 10 });
+  }
+  function sparks(x, y, n, color) {
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + Math.random() * 0.2, sp = 260 + Math.random() * 220;
+      spawn({ kind: 'spark', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, color, dur: 650 + Math.random() * 250, len: 10 });
+    }
+  }
+  function confetti(x, y, n, o) {
+    const dir = o.dir == null ? 0 : o.dir, spread = o.spread == null ? Math.PI * 2 : o.spread;
+    for (let i = 0; i < n; i++) {
+      const a = dir + (Math.random() - 0.5) * spread, sp = o.speed[0] + Math.random() * (o.speed[1] - o.speed[0]);
+      spawn({ kind: 'confetti', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, gravity: o.gravity == null ? 900 : o.gravity,
+        w: 6 + Math.random() * 6, h: 4 + Math.random() * 4, rot: Math.random() * Math.PI, vr: (Math.random() - 0.5) * 12,
+        color: CONFETTI[Math.floor(Math.random() * CONFETTI.length)], dur: 2400 + Math.random() * 900 });
+    }
+  }
+  function firework(x, y, color) {
+    for (let i = 0; i < 46; i++) {
+      const a = Math.random() * Math.PI * 2, sp = 120 + Math.random() * 260;
+      spawn({ kind: 'ember', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, gravity: 260,
+        color: Math.random() < 0.3 ? '#FFFFFF' : color, dur: 900 + Math.random() * 500, r: 2 + Math.random() * 2 });
+    }
+    flash(3);
+  }
+  function stamp(title, sub, level) {
+    ui.stampT.textContent = title;
+    ui.stampS.textContent = sub;
+    ui.stamp.className = 'stamp';
+    void ui.stamp.offsetWidth;
+    ui.stamp.className = `stamp lv${level} go`;
+  }
+  function flash(level) {
+    ui.flash.className = 'flash';
+    void ui.flash.offsetWidth;
+    ui.flash.className = `flash lv${level} go`;
+  }
+
+  // -- particle loop --
+  function spawn(p) {
+    if (reduceMotion) return;
+    p.t0 = performance.now() + (p.delay || 0);
+    FX.push(p);
+    if (!fxRaf) { fxLast = performance.now(); fxRaf = requestAnimationFrame(fxTick); }
+  }
+  function fxTick(now) {
+    fxRaf = 0;
+    const dt = Math.min(0.05, (now - fxLast) / 1000);
+    fxLast = now;
+    fctx.setTransform(V.dpr, 0, 0, V.dpr, 0, 0);
+    fctx.clearRect(0, 0, V.w, V.h);
+    FX = FX.filter((p) => {
+      if (now < p.t0) return true;
+      const age = now - p.t0, k = age / p.dur;
+      if (k >= 1) return false;
+      if (p.kind === 'ring') {
+        const [cx, cy] = toScreen(...p.anchor);
+        fctx.globalAlpha = 1 - k;
+        fctx.strokeStyle = p.color; fctx.lineWidth = p.width;
+        fctx.beginPath(); fctx.arc(cx, cy, 10 + p.r1 * k, 0, Math.PI * 2); fctx.stroke();
+        fctx.globalAlpha = 1;
+        return true;
+      }
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      if (p.gravity) p.vy += p.gravity * dt;
+      if (p.kind === 'spark') {
+        p.vx *= 0.96; p.vy *= 0.96;
+        fctx.globalAlpha = 1 - k;
+        fctx.strokeStyle = p.color; fctx.lineWidth = 2;
+        const m = Math.hypot(p.vx, p.vy) || 1;
+        fctx.beginPath(); fctx.moveTo(p.x, p.y); fctx.lineTo(p.x - p.vx / m * p.len, p.y - p.vy / m * p.len); fctx.stroke();
+      } else if (p.kind === 'ember') {
+        p.vx *= 0.985; p.vy *= 0.985;
+        fctx.globalAlpha = 1 - k * k;
+        fctx.fillStyle = p.color;
+        fctx.beginPath(); fctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); fctx.fill();
+      } else if (p.kind === 'confetti') {
+        p.vx *= 0.99; p.vy *= 0.995; p.rot += p.vr * dt;
+        fctx.globalAlpha = k > 0.8 ? (1 - k) / 0.2 : 1;
+        fctx.fillStyle = p.color;
+        fctx.save(); fctx.translate(p.x, p.y); fctx.rotate(p.rot);
+        fctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h * Math.abs(Math.cos(p.rot * 1.7)) + 1);
+        fctx.restore();
+      }
+      fctx.globalAlpha = 1;
+      return p.y < V.h + 40;
+    });
+    if (FX.length) fxRaf = requestAnimationFrame(fxTick);
+  }
 
   // ---- leaderboard -----------------------------------------------------------
   // Shared across viewers through the artifact's database when the page runs
@@ -1043,6 +1223,7 @@
   window.PP.timeOut = () => { stopTimer(); timeOut(); };
   window.PP.nextPin = nextPin;
   window.PP.beginRound = beginRound;
+  window.PP.celebrate = (level) => { const G2 = G; const t = G2.target; celebrate(level, { mi: [400, 200, 80, 20, 3][level - 1] }, t); };
   window.PP.advance = advance;
   window.PP._viewCenter = () => toMap(V.w / 2, V.h / 2);
   window.PP._unproj = (px, py) => unproj(...toMap(px, py));

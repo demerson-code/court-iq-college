@@ -45,6 +45,28 @@ test('scoring: bullseye inside country, linear falloff, zero far away', async ({
   expect(r.miAtAvg1).toBe(1750);
 });
 
+test('fanfare tiers by miles from the capital', async ({ page }) => {
+  const r = await page.evaluate(() => {
+    const { celebrationLevel } = window.PP;
+    return [900, 500, 499, 250, 100, 25, 5, 4.9, 0, null].map(celebrationLevel);
+  });
+  expect(r).toEqual([0, 1, 1, 2, 3, 4, 5, 5, 5, 0]);
+});
+
+test('a pin within 5 miles gets the Pinpoint chip and the fractional distance', async ({ page }) => {
+  await page.evaluate(() => window.PP.setPrefs({ mode: 'capitals', region: 'world', timer: false }));
+  await page.click('#startBtn'); await page.click('#introBtn');
+  await page.evaluate(() => {
+    const G = window.PP.state();
+    window.PP.guessLatLon(G.target.lat + 3 / 69, G.target.lon); // ~3 mi north
+  });
+  await expect(page.locator('#resChip')).toHaveText('Pinpoint');
+  await expect(page.locator('#resDetail')).toContainText('3.0 mi');
+  await page.waitForTimeout(900);
+  await expect(page.locator('#stamp')).toHaveClass(/lv5/);
+  await expect(page.locator('#stampT')).toHaveText('PINPOINT!');
+});
+
 test('every listed country has a map shape and its capital sits inside it', async ({ page }) => {
   const bad = await page.evaluate(() => {
     const geo = window.PP.decodeTopo(window.WORLD_TOPO);
@@ -115,7 +137,7 @@ test('round flow: seven pins make a round, the total decides, a missed bar ends 
   let s = await page.evaluate(() => {
     const G = window.PP.state();
     const lon = G.target.lon > 0 ? G.target.lon - 180 : G.target.lon + 180;
-    window.PP.guessLatLon(-G.target.lat, lon);
+    window.PP.guessLatLon(Math.max(-50, Math.min(50, -G.target.lat)), lon); // far side, but on the map
     return { round: G.round, pin: G.pin, pts: G.guess.pts, phase: G.phase, tier: G.target.tier, score: G.score };
   });
   expect(s.round).toBe(2);
@@ -131,7 +153,7 @@ test('round flow: seven pins make a round, the total decides, a missed bar ends 
     s = await page.evaluate(() => {
       const G = window.PP.state();
       const lon = G.target.lon > 0 ? G.target.lon - 180 : G.target.lon + 180;
-      window.PP.guessLatLon(-G.target.lat, lon);
+      window.PP.guessLatLon(Math.max(-50, Math.min(50, -G.target.lat)), lon); // far side, but on the map
       return { pin: G.pin, phase: G.phase };
     });
     expect(s.pin).toBe(i);
