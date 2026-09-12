@@ -26,14 +26,43 @@
   const BEST_KEY = 'pinpoint_best_v1';
 
   // ---- map geometry -----------------------------------------------------
-  // Equirectangular, cropped to the inhabited band. "Map units" are pixels at
-  // zoom 1 of a reference 3600 x 1420 canvas: 10 units per degree.
-  const MU = 10;
+  // Natural Earth projection (Šavrič et al., the d3-geo polynomial), cropped
+  // to the inhabited band. "Map units" are pixels at zoom 1 of a reference
+  // canvas 3600 units wide.
+  const D2R = Math.PI / 180, R2D = 180 / Math.PI;
   const LAT_MAX = 84, LAT_MIN = -58;
-  const MW = 360 * MU, MH = (LAT_MAX - LAT_MIN) * MU;
-  const mx = (lon) => (lon + 180) * MU;
-  const my = (lat) => (LAT_MAX - lat) * MU;
-
+  function neRaw(lam, phi) {
+    const p2 = phi * phi, p4 = p2 * p2;
+    return [lam * (0.8707 - 0.131979 * p2 + p4 * (-0.013791 + p4 * (0.003971 * p2 - 0.001529 * p4))),
+            phi * (1.007226 + p2 * (0.015085 + p4 * (-0.044475 + 0.028874 * p2 - 0.005916 * p4)))];
+  }
+  function neInvert(x, y) {
+    let phi = y, i = 25, d;
+    do {
+      const p2 = phi * phi, p4 = p2 * p2;
+      d = (phi * (1.007226 + p2 * (0.015085 + p4 * (-0.044475 + 0.028874 * p2 - 0.005916 * p4))) - y) /
+          (1.007226 + p2 * (0.015085 * 3 + p4 * (-0.044475 * 7 + 0.028874 * 9 * p2 - 0.005916 * 11 * p4)));
+      phi -= d;
+    } while (Math.abs(d) > 1e-7 && --i > 0);
+    const p2 = phi * phi, p4 = p2 * p2;
+    return [x / (0.8707 - 0.131979 * p2 + p4 * (-0.013791 + p4 * (0.003971 * p2 - 0.001529 * p4))), phi];
+  }
+  const XMAX = neRaw(Math.PI, 0)[0];
+  const YTOP = neRaw(0, LAT_MAX * D2R)[1], YBOT = neRaw(0, LAT_MIN * D2R)[1];
+  const K = 3600 / (2 * XMAX);
+  const MW = 2 * XMAX * K, MH = (YTOP - YBOT) * K;
+  // lon/lat degrees -> map units
+  function proj(lon, lat) {
+    const [x, y] = neRaw(lon * D2R, lat * D2R);
+    return [(x + XMAX) * K, (YTOP - y) * K];
+  }
+  // map units -> [lon, lat] degrees, or null when outside the drawn globe
+  function unproj(x, y) {
+    const [lam, phi] = neInvert(x / K - XMAX, YTOP - y / K);
+    const lon = lam * R2D, lat = phi * R2D;
+    if (!(lon >= -180 && lon <= 180 && lat >= LAT_MIN && lat <= LAT_MAX)) return null;
+    return [lon, lat];
+  }
   // ---- pure helpers (exposed on window.PP) ------------------------------
   function haversineMi(lat1, lon1, lat2, lon2) {
     const r = Math.PI / 180;
@@ -77,6 +106,32 @@
     return inside;
   }
 
+  // Split a ring wherever it jumps across the 180° meridian, closing each
+  // piece along the map edge. Without this, Russia's far east and Fiji draw
+  // a stroke straight across the map.
+  function splitAntimeridian(ring) {
+    const out = [];
+    let cur = [];
+    for (let i = 0; i < ring.length; i++) {
+      const p = ring[i];
+      if (i > 0) {
+        const q = ring[i - 1];
+        if (Math.abs(p[0] - q[0]) > 180) {
+          const edge = q[0] > 0 ? 180 : -180;
+          const f = Math.abs(edge - q[0]) / Math.max(1e-9, Math.abs(edge - q[0]) + Math.abs(-edge - p[0]));
+          const lat = q[1] + (p[1] - q[1]) * f;
+          cur.push([edge, lat]);
+          out.push(cur);
+          cur = [[-edge, lat]];
+        }
+      }
+      cur.push(p);
+    }
+    if (!out.length) return [ring];
+    out[0] = cur.concat(out[0]);
+    return out;
+  }
+
   // Minimal TopoJSON decoder — only what world-atlas needs.
   function decodeTopo(topo) {
     const { scale, translate } = topo.transform;
@@ -98,7 +153,8 @@
     };
     return topo.objects.countries.geometries.map((g) => {
       const raw = g.type === 'Polygon' ? [g.arcs] : g.type === 'MultiPolygon' ? g.arcs : [];
-      return { name: g.properties.name, polys: raw.map((p) => p.map(ring)) };
+      const polys = raw.map((p) => p.flatMap((idxs) => splitAntimeridian(ring(idxs))));
+      return { name: g.properties.name, polys };
     });
   }
 
@@ -128,7 +184,7 @@
     c.path = new Path2D();
     for (const poly of c.polys) for (const ring of poly) {
       ring.forEach(([lon, lat], i) => {
-        const x = mx(lon), y = my(lat);
+        const [x, y] = proj(lon, lat);
         if (i === 0) c.path.moveTo(x, y); else c.path.lineTo(x, y);
       });
       c.path.closePath();
@@ -136,11 +192,31 @@
     // bounding box in map units, used to frame the country after a guess
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const poly of c.polys) for (const ring of poly) for (const [lon, lat] of ring) {
-      const x = mx(lon), y = my(lat);
+      const [x, y] = proj(lon, lat);
       if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
     }
     c.bbox = [[x0, y0], [x1, y1]];
   }
+  // Outline of the drawn globe: top edge, right meridian, bottom edge, left meridian.
+  const seaPath = new Path2D();
+  (function () {
+    const pt = (lon, lat, first) => { const [x, y] = proj(lon, lat); first ? seaPath.moveTo(x, y) : seaPath.lineTo(x, y); };
+    for (let lon = -180; lon <= 180; lon += 2) pt(lon, LAT_MAX, lon === -180);
+    for (let lat = LAT_MAX; lat >= LAT_MIN; lat -= 1) pt(180, lat);
+    for (let lon = 180; lon >= -180; lon -= 2) pt(lon, LAT_MIN);
+    for (let lat = LAT_MIN; lat <= LAT_MAX; lat += 1) pt(-180, lat);
+    seaPath.closePath();
+  })();
+  const gratPath = new Path2D();
+  (function () {
+    for (let lon = -150; lon <= 150; lon += 30) for (let lat = LAT_MIN; lat <= LAT_MAX; lat += 2) {
+      const [x, y] = proj(lon, lat); lat === LAT_MIN ? gratPath.moveTo(x, y) : gratPath.lineTo(x, y);
+    }
+    for (let lat = -30; lat <= 60; lat += 30) for (let lon = -180; lon <= 180; lon += 2) {
+      const [x, y] = proj(lon, lat); lon === -180 ? gratPath.moveTo(x, y) : gratPath.lineTo(x, y);
+    }
+  })();
+
   const ROSTER = window.COUNTRIES.map(([mapName, name, capital, lat, lon, tier]) => {
     const geo = byName.get(mapName);
     if (!geo) console.warn('Pinpoint: no map shape for', mapName);
@@ -220,9 +296,9 @@
 
   // ---- drawing ----------------------------------------------------------
   const C = {
-    page: '#08131C', ocean: '#0F2434', land: '#2C4A44', border: '#517D70',
-    grat: 'rgba(120,170,190,0.10)', hit: 'rgba(245,196,81,0.55)',
-    guess: '#FF5A47', capital: '#F5C451', line: 'rgba(242,235,220,0.75)',
+    page: '#DCE8EE', sea: '#A9D3DF', land: '#3E8E5B', border: '#E4F2E8',
+    grat: 'rgba(0,60,90,0.09)', hit: 'rgba(245,196,81,0.85)', hitStroke: '#8A5A00',
+    guess: '#E0452F', capital: '#1B2A3A', line: 'rgba(27,42,58,0.7)',
   };
 
   function draw() {
@@ -233,20 +309,17 @@
 
     ctx.save();
     ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * ox, dpr * oy);
-    ctx.fillStyle = C.ocean;
-    ctx.fillRect(0, 0, MW, MH);
+    ctx.fillStyle = C.sea;
+    ctx.fill(seaPath);
+    ctx.clip(seaPath);
 
-    // graticule every 30 degrees
     ctx.strokeStyle = C.grat;
     ctx.lineWidth = 1 / s;
-    ctx.beginPath();
-    for (let lon = -150; lon <= 150; lon += 30) { ctx.moveTo(mx(lon), 0); ctx.lineTo(mx(lon), MH); }
-    for (let lat = -30; lat <= 60; lat += 30) { ctx.moveTo(0, my(lat)); ctx.lineTo(MW, my(lat)); }
-    ctx.stroke();
+    ctx.stroke(gratPath);
 
     ctx.fillStyle = C.land;
     ctx.strokeStyle = C.border;
-    ctx.lineWidth = Math.max(0.6 / s, 0.02);
+    ctx.lineWidth = Math.max(0.7 / s, 0.02);
     ctx.lineJoin = 'round';
     for (const c of countries) { ctx.fill(c.path); ctx.stroke(c.path); }
 
@@ -254,7 +327,7 @@
       const t = G.target.geo;
       ctx.fillStyle = C.hit;
       ctx.fill(t.path);
-      ctx.strokeStyle = C.capital;
+      ctx.strokeStyle = C.hitStroke;
       ctx.lineWidth = 1.5 / s;
       ctx.stroke(t.path);
     }
@@ -266,8 +339,8 @@
   function drawMarkers() {
     const { dpr } = V;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const [gx, gy] = toScreen(mx(G.guess.lon), my(G.guess.lat));
-    const [cx, cy] = toScreen(mx(G.target.lon), my(G.target.lat));
+    const [gx, gy] = toScreen(...proj(G.guess.lon, G.guess.lat));
+    const [cx, cy] = toScreen(...proj(G.target.lon, G.target.lat));
 
     if (!G.guess.inside) {
       ctx.setLineDash([6, 6]);
@@ -277,7 +350,9 @@
       ctx.setLineDash([]);
     }
 
-    // capital: gold ring + dot
+    // capital: navy ring + dot with a white halo so it reads on gold or green
+    ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.stroke();
     ctx.strokeStyle = C.capital; ctx.lineWidth = 2.5;
     ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.stroke();
     ctx.fillStyle = C.capital;
@@ -299,7 +374,7 @@
     ctx.arc(0, -18, 11, Math.PI, 0);
     ctx.bezierCurveTo(11, -10, 3, -8, 0, 0);
     ctx.fill();
-    ctx.fillStyle = C.page;
+    ctx.fillStyle = '#FFFFFF';
     ctx.beginPath(); ctx.arc(0, -18, 4, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
@@ -342,8 +417,9 @@
 
   function handleGuess(px, py) {
     const [x, y] = toMap(px, py);
-    if (x < 0 || x > MW || y < 0 || y > MH) return; // clicked the page margin, not the map
-    const lon = x / MU - 180, lat = LAT_MAX - y / MU;
+    const ll = unproj(x, y);
+    if (!ll) return; // clicked the page margin, not the globe
+    const [lon, lat] = ll;
     const t = G.target;
     const inside = pointInRings(lon, lat, t.geo.polys);
     const mi = haversineMi(lat, lon, t.lat, t.lon);
@@ -353,7 +429,7 @@
     G.score += pts;
     G.phase = pts >= need ? 'result' : 'over';
 
-    fitPoints([[mx(lon), my(lat)], [mx(t.lon), my(t.lat)], ...t.geo.bbox]);
+    fitPoints([proj(lon, lat), proj(t.lon, t.lat), ...t.geo.bbox]);
     draw();
     hide(ui.prompt);
     showResult(pts, need, mi, inside);
@@ -440,7 +516,7 @@
       ui.promptName.textContent = t.name;
       ui.promptSub.textContent = `Round ${G.round} · need ${fmt(barFor(G.round))} pts`;
     } else {
-      fitPoints([[mx(G.guess.lon), my(G.guess.lat)], [mx(t.lon), my(t.lat)], ...t.geo.bbox]);
+      fitPoints([proj(G.guess.lon, G.guess.lat), proj(t.lon, t.lat), ...t.geo.bbox]);
       showResult(G.guess.pts, barFor(G.round), G.guess.mi, G.guess.inside);
     }
     draw();
@@ -544,7 +620,7 @@
   window.PP.state = () => G;
   window.PP.startGame = startGame;
   window.PP.guessLatLon = (lat, lon) => {
-    const [px, py] = toScreen(mx(lon), my(lat));
+    const [px, py] = toScreen(...proj(lon, lat));
     handleGuess(px, py);
   };
   window.PP.advance = advance;
