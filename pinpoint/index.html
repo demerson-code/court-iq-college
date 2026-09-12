@@ -186,6 +186,10 @@
   }
   .result.fail .pts { color: var(--pin); }
   .result.bullseye .pts { color: var(--amber); }
+  .result .learn { grid-column: 1 / -1; display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: 9px; background: var(--panel-2); margin-top: 2px; }
+  .result .learn .flag { width: 40px; height: auto; border-radius: 3px; box-shadow: 0 0 0 1px rgba(20,32,51,0.15); flex: none; margin-top: 2px; }
+  .result .learn .hook { font-size: 13.5px; color: var(--ink); line-height: 1.35; }
+  .result .learn .near { font-size: 12.5px; color: var(--ink-2); margin-top: 2px; }
   .result .track { grid-column: 1 / -1; position: relative; height: 8px; border-radius: 4px; background: var(--panel-2); margin-top: 6px; }
   .result .fill { height: 100%; border-radius: 4px; background: var(--good); width: 0; transition: width 320ms ease-out; }
   .result.fail .fill { background: var(--pin); }
@@ -357,6 +361,10 @@
       <h2 id="resTitle"><span id="resTitleText">Mongolia — cleared.</span><span class="chip" id="resChip" hidden></span></h2>
       <p id="resDetail">Your pin was 412 mi from Ulaanbaatar, the capital.</p>
       <div class="pts" id="resPts">+4,180<span class="bonus" id="resBonus" hidden></span></div>
+      <div class="learn" id="resLearn" hidden>
+        <img class="flag" id="resFlag" alt="" width="40" height="27" hidden>
+        <div class="learn-text"><div class="hook" id="resHook"></div><div class="near" id="resNear"></div></div>
+      </div>
       <div class="track"><div class="fill" id="resFill"></div></div>
       <div class="foot">
         <span class="need" id="resNeed">Round 1: 4,180 of 10,500 · 6 pins left</span>
@@ -401,13 +409,20 @@
             </div>
           </div>
           <div class="opt-row">
+            <span class="opt-k">Teach</span>
+            <div class="seg" role="group" aria-label="Teach at the miss">
+              <button type="button" data-k="teach" data-v="true">On</button>
+              <button type="button" data-k="teach" data-v="false">Off</button>
+            </div>
+          </div>
+          <div class="opt-row">
             <span class="opt-k">Timer</span>
             <div class="seg" role="group" aria-label="Timer">
               <button type="button" data-k="timer" data-v="false">Off</button>
               <button type="button" data-k="timer" data-v="true">12 s a round</button>
             </div>
           </div>
-          <p class="opt-note">Capitals mode counts only the city: no credit for landing inside the country. With the timer on, a pin that keeps pace with time left adds a speed bonus of up to 1,000; a timed-out pin scores 0 but the round goes on.</p>
+          <p class="opt-note">Teach labels the country and its neighbors on the map after every pin, with its flag and a one-line memory hook. Capitals mode counts only the city: no credit for landing inside the country. With the timer on, a pin that keeps pace with time left adds a speed bonus of up to 1,000; a timed-out pin scores 0 but the round goes on.</p>
         </div>
         <div class="actions">
           <button class="btn" id="startBtn" type="button">Start</button>
@@ -461,6 +476,7 @@
 
 <script src="world.js"></script>
 <script src="countries.js"></script>
+<script src="meta.js"></script>
 <script src="game.js"></script>
 </body>
 </html>

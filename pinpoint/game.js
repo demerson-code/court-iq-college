@@ -182,7 +182,8 @@
     return topo.objects.countries.geometries.map((g) => {
       const raw = g.type === 'Polygon' ? [g.arcs] : g.type === 'MultiPolygon' ? g.arcs : [];
       const polys = raw.map((p) => p.flatMap((idxs) => splitAntimeridian(ring(idxs))));
-      return { name: g.properties.name, polys };
+      const arcIds = new Set(raw.flat(2).map((i) => (i < 0 ? ~i : i)));
+      return { name: g.properties.name, polys, arcIds };
     });
   }
 
@@ -211,6 +212,7 @@
     zoomIn: $('zoomIn'), zoomOut: $('zoomOut'), zoomFit: $('zoomFit'),
     fx: $('fx'), stamp: $('stamp'), stampT: $('stampT'), stampS: $('stampS'), flash: $('flash'),
     resChip: $('resChip'), stage: document.querySelector('.stage'),
+    resLearn: $('resLearn'), resFlag: $('resFlag'), resHook: $('resHook'), resNear: $('resNear'),
   };
 
   // ---- data -------------------------------------------------------------
@@ -232,7 +234,32 @@
       if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
     }
     c.bbox = [[x0, y0], [x1, y1]];
+    // label point: centroid of the biggest ring (mainland), in map units
+    let best = null, bestArea = -1;
+    for (const poly of c.polys) for (const ring of poly) {
+      let a = 0, cx = 0, cy = 0;
+      const pts = ring.map(([lon, lat]) => proj(lon, lat));
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const f = pts[j][0] * pts[i][1] - pts[i][0] * pts[j][1];
+        a += f; cx += (pts[j][0] + pts[i][0]) * f; cy += (pts[j][1] + pts[i][1]) * f;
+      }
+      if (Math.abs(a) > bestArea) { bestArea = Math.abs(a); best = a ? [cx / (3 * a), cy / (3 * a)] : pts[0]; }
+    }
+    c.label = best || [(x0 + x1) / 2, (y0 + y1) / 2];
   }
+  // Neighbours: two countries that share a border share a TopoJSON arc.
+  (function () {
+    const byArc = new Map();
+    for (const c of countries) for (const a of c.arcIds) {
+      if (!byArc.has(a)) byArc.set(a, []);
+      byArc.get(a).push(c);
+    }
+    for (const c of countries) {
+      const set = new Set();
+      for (const a of c.arcIds) for (const o of byArc.get(a)) if (o !== c) set.add(o);
+      c.neighbors = [...set];
+    }
+  })();
   // Outline of the drawn globe: top edge, right meridian, bottom edge, left meridian.
   const seaPath = new Path2D();
   (function () {
@@ -256,11 +283,29 @@
   const ROSTER = window.COUNTRIES.map(([mapName, name, capital, lat, lon, tier, region]) => {
     const geo = byName.get(mapName);
     if (!geo) console.warn('Pinpoint: no map shape for', mapName);
-    return { mapName, name, capital, lat, lon, tier, region: region || 'AP', geo };
+    const meta = (window.META || {})[mapName] || [null, ''];
+    return { mapName, name, capital, lat, lon, tier, region: region || 'AP', geo, iso: meta[0], hook: meta[1] };
   }).filter((c) => c.geo);
+  const rosterByMap = new Map(ROSTER.map((c) => [c.mapName, c]));
+  // Display names for map shapes that are not in the playable table.
+  const EXTRA_NAMES = { 'W. Sahara': 'Western Sahara', 'N. Cyprus': 'Northern Cyprus', 'Fr. S. Antarctic Lands': 'French Southern Lands',
+    'Br. Indian Ocean Ter.': 'British Indian Ocean Territory', 'Falkland Is.': 'Falkland Islands', 'Faeroe Is.': 'Faroe Islands',
+    'Cayman Is.': 'Cayman Islands', 'Turks and Caicos Is.': 'Turks and Caicos', 'U.S. Virgin Is.': 'U.S. Virgin Islands',
+    'British Virgin Is.': 'British Virgin Islands', 'Cook Is.': 'Cook Islands', 'N. Mariana Is.': 'Northern Mariana Islands',
+    'Fr. Polynesia': 'French Polynesia', 'St-Martin': 'Saint Martin', 'St-Barthélemy': 'Saint Barthélemy', 'Siachen Glacier': 'Siachen Glacier' };
+  const displayName = (geo) => (rosterByMap.get(geo.name) || {}).name || EXTRA_NAMES[geo.name] || geo.name;
+  // What to teach for a target: bordering countries, or the nearest capitals for an island.
+  function neighborsOf(t) {
+    const n = t.geo.neighbors.filter((g) => g.name !== 'Antarctica');
+    if (n.length) return { kind: 'borders', list: n.slice(0, 8) };
+    const near = ROSTER.filter((c) => c !== t)
+      .map((c) => ({ c, d: haversineMi(t.lat, t.lon, c.lat, c.lon) }))
+      .filter((x) => x.d < 1200).sort((a, b) => a.d - b.d).slice(0, 3);
+    return { kind: 'nearest', list: near.map((x) => x.c.geo) };
+  }
 
   // ---- state ------------------------------------------------------------
-  const P = loadPrefs();   // { mode: 'countries'|'capitals', region, timer }
+  const P = loadPrefs();   // { mode: 'countries'|'capitals', region, timer, teach }
   const G = {
     phase: 'start',      // start | intro | guess | result | roundEnd | over
     round: 0, pin: 0, roundPts: 0, lastRoundPts: null, score: 0, used: new Set(), target: null,
@@ -285,6 +330,7 @@
       mode: p.mode === 'capitals' ? 'capitals' : 'countries',
       region: REGIONS[p.region] ? p.region : 'world',
       timer: !!p.timer,
+      teach: p.teach !== false,
     };
   }
   function savePrefs() { saveJSON(PREFS_KEY, P); }
@@ -437,6 +483,25 @@
     ctx.restore();
 
     if (revealed && G.guess) drawMarkers();
+    if (revealed && P.teach && G.target) drawTeachLabels();
+  }
+
+  // Name the country and the countries around it, so a miss becomes a lesson.
+  function drawTeachLabels() {
+    const { dpr } = V;
+    const t = G.target;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const label = (geo, size, weight, color, dy) => {
+      const [x, y] = toScreen(...geo.label);
+      if (x < -60 || x > V.w + 60 || y < -20 || y > V.h + 20) return;
+      ctx.font = `${weight} ${size}px ${size >= 15 ? "'Bricolage Grotesque', 'Helvetica Neue', Arial, sans-serif" : "'IBM Plex Sans', 'Segoe UI', Helvetica, Arial, sans-serif"}`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(3, size / 4); ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+      ctx.strokeText(displayName(geo), x, y + dy);
+      ctx.fillStyle = color; ctx.fillText(displayName(geo), x, y + dy);
+    };
+    for (const g of neighborsOf(t).list) label(g, 12.5, '600', '#1F2F45', 0);
+    label(t.geo, 18, '800', '#7A4A00', -14);
   }
 
   function drawMarkers() {
@@ -695,6 +760,7 @@
         ? `Your pin landed inside ${t.name}, ${fmtMi(g.mi)} mi from ${t.capital}.`
         : `Your pin was ${fmtMi(g.mi)} mi from ${t.capital}${capitals ? '' : ', the capital'}.`;
     }
+    renderLearn(t);
     const level = g.timedOut ? 0 : celebrationLevel(g.mi);
     ui.resChip.hidden = !level;
     ui.resChip.textContent = level ? CELEB[level].chip : '';
@@ -717,6 +783,24 @@
     }
     show(ui.result);
     ui.resBtn.focus({ preventScroll: true });
+  }
+
+  function renderLearn(t) {
+    ui.resLearn.hidden = !P.teach;
+    if (!P.teach) return;
+    ui.resHook.textContent = t.hook || '';
+    const n = neighborsOf(t);
+    const names = n.list.map(displayName);
+    ui.resNear.textContent = !names.length ? ''
+      : n.kind === 'borders' ? `Borders ${names.join(', ')}.` : `Nearest: ${names.join(', ')}.`;
+    if (t.iso) {
+      ui.resFlag.hidden = false;
+      ui.resFlag.src = `https://flagcdn.com/w80/${t.iso.toLowerCase()}.png`;
+      ui.resFlag.alt = `Flag of ${t.name}`;
+    } else {
+      ui.resFlag.hidden = true;
+      ui.resFlag.removeAttribute('src');
+    }
   }
 
   function advance() {
@@ -816,7 +900,7 @@
     const b = e.target.closest('button[data-k]');
     if (!b) return;
     const k = b.dataset.k, v = b.dataset.v;
-    P[k] = k === 'timer' ? v === 'true' : v;
+    P[k] = (k === 'timer' || k === 'teach') ? v === 'true' : v;
     savePrefs();
     renderOptions();
     renderHud();
@@ -1177,6 +1261,7 @@
 
   ui.startBtn.addEventListener('click', startGame);
   ui.introBtn.addEventListener('click', beginRound);
+  ui.resFlag.addEventListener('error', () => { ui.resFlag.hidden = true; }); // no flag host reachable: just skip it
   ui.resBtn.addEventListener('click', advance);
   ui.overBtn.addEventListener('click', () => {
     // back to the start screen so mode / region / timer can change between runs
@@ -1215,6 +1300,7 @@
   window.PP.prefs = () => P;
   window.PP.setPrefs = (p) => { Object.assign(P, p); savePrefs(); renderOptions(); renderHud(); };
   window.PP.roster = () => roster();
+  window.PP.neighborsOf = (mapName) => { const t = rosterByMap.get(mapName); const n = neighborsOf(t); return { kind: n.kind, names: n.list.map(displayName) }; };
   window.PP.startGame = startGame;
   window.PP.guessLatLon = (lat, lon) => {
     const [px, py] = toScreen(...proj(lon, lat));

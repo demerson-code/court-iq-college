@@ -6,14 +6,14 @@ the repo root via GitHub Pages.
 
 - **Live**: https://demerson-code.github.io/court-iq-college/
 - **Local preview**: `python -m http.server 3460` → http://localhost:3460/
-- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 10 Pinpoint, ~16s)
+- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 11 Pinpoint, ~18s)
 - **Deploy**: `git push origin main` (GitHub Pages auto-deploys, 30–90s)
 - **Plan**: `PLAN.md` (untracked by intent — owns the per-block scope; don't
   duplicate it here)
 
 ## Pinpoint (`pinpoint/`) — separate map game, same repo
 
-A self-contained geography game served at `/pinpoint/` (four files, no build
+A self-contained geography game served at `/pinpoint/` (five files, no build
 step, shares nothing with the volleyball app). A round is 7 pins; each names
 a country and the player clicks the map. Inside the country or within 25 mi
 of the capital = 5,000 pts; otherwise points fall off linearly to 0 at
@@ -28,6 +28,10 @@ difficulty min(r, 5).
   "how well an American knows it": 1 household names … 5 deep cuts.
 - `world.js` — world-atlas 50m TopoJSON, 755 KB (ISC, see LICENSE-world-atlas.txt).
   Rings crossing 180° are split at decode time or they stroke across the map.
+- `meta.js` — `{ mapName: [iso2, hook] }`: flag code (flagcdn.com image) and a
+  one-line memory hook per country. Teach mode (pref `teach`, default on)
+  labels the target and its bordering countries on the reveal; borders come
+  from shared TopoJSON arcs, islands fall back to the 3 nearest capitals.
 - Fanfare: five tiers by miles from the capital (500 / 250 / 100 / 25 / 5),
   particles on the `#fx` canvas over the map, text stamps + flash in the DOM.
   `CELEBRATE_MI` and `celebrate()` in game.js. Skipped under reduced motion.

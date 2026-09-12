@@ -67,6 +67,31 @@ test('a pin within 5 miles gets the Pinpoint chip and the fractional distance', 
   await expect(page.locator('#stampT')).toHaveText('PINPOINT!');
 });
 
+test('teach at the miss: borders come from the map, islands get nearest capitals, every country has a hook', async ({ page }) => {
+  const r = await page.evaluate(() => {
+    const chad = window.PP.neighborsOf('Chad');
+    const iceland = window.PP.neighborsOf('Iceland');
+    const missing = window.COUNTRIES.filter((c) => !window.META[c[0]] || !window.META[c[0]][1]).map((c) => c[1]);
+    return { chad, iceland, missing };
+  });
+  expect(r.chad.kind).toBe('borders');
+  for (const n of ['Libya', 'Niger', 'Nigeria', 'Cameroon', 'Central African Republic', 'Sudan']) expect(r.chad.names).toContain(n);
+  expect(r.iceland.kind).toBe('nearest');
+  expect(r.iceland.names.length).toBeGreaterThan(0);
+  expect(r.missing).toEqual([]);
+
+  // The card shows the hook and borders; turning Teach off hides it.
+  await page.evaluate(() => window.PP.setPrefs({ mode: 'countries', region: 'world', timer: false, teach: true }));
+  await page.click('#startBtn'); await page.click('#introBtn');
+  await page.evaluate(() => { const G = window.PP.state(); window.PP.guessLatLon(G.target.lat + 8, G.target.lon + 8); });
+  await expect(page.locator('#resLearn')).toBeVisible();
+  await expect(page.locator('#resHook')).not.toHaveText('');
+  await page.evaluate(() => window.PP.setPrefs({ teach: false }));
+  await page.waitForTimeout(550); await page.click('#resBtn');
+  await page.evaluate(() => { const G = window.PP.state(); window.PP.guessLatLon(G.target.lat + 8, G.target.lon + 8); });
+  await expect(page.locator('#resLearn')).toBeHidden();
+});
+
 test('every listed country has a map shape and its capital sits inside it', async ({ page }) => {
   const bad = await page.evaluate(() => {
     const geo = window.PP.decodeTopo(window.WORLD_TOPO);
@@ -93,6 +118,7 @@ test('every listed country has a map shape and its capital sits inside it', asyn
 });
 
 test('round flow: seven pins make a round, the total decides, a missed bar ends the game', async ({ page }) => {
+  test.setTimeout(45_000); // 14 pins with a human-paced pause before each button press
   await page.evaluate(() => window.PP.setPrefs({ mode: 'countries', region: 'world', timer: false }));
   await page.click('#startBtn');
   await expect(page.locator('#intro')).toBeVisible();
