@@ -92,6 +92,30 @@ test('teach at the miss: borders come from the map, islands get nearest capitals
   await expect(page.locator('#resLearn')).toBeHidden();
 });
 
+test('hint: one per round, costs 1,500 off that pin, comes back next round', async ({ page }) => {
+  test.setTimeout(45_000);
+  await page.evaluate(() => window.PP.setPrefs({ mode: 'countries', region: 'world', timer: false, teach: true }));
+  await page.click('#startBtn'); await page.click('#introBtn');
+  await expect(page.locator('#hintBtn')).toBeEnabled();
+  await page.click('#hintBtn');
+  await expect(page.locator('#hintText')).toBeVisible();
+  await expect(page.locator('#hintText')).not.toHaveText('');
+  let s = await page.evaluate(() => { const G = window.PP.state(); window.PP.guessLatLon(G.target.lat, G.target.lon); return { pts: G.guess.pts, hinted: G.guess.hinted }; });
+  expect(s.pts).toBe(3500);
+  expect(s.hinted).toBe(true);
+  await expect(page.locator('#resHint')).toContainText('1,500 hint');
+  // pins 2..7: the button is spent for the round
+  for (let i = 2; i <= 7; i++) {
+    await page.waitForTimeout(550); await page.click('#resBtn');
+    await expect(page.locator('#hintBtn')).toBeDisabled();
+    s = await page.evaluate(() => { const G = window.PP.state(); window.PP.useHint(); window.PP.guessLatLon(G.target.lat, G.target.lon); return { pts: G.guess.pts }; });
+    expect(s.pts).toBe(5000);
+  }
+  await page.waitForTimeout(550); await page.click('#resBtn'); // round 1 done -> announcement
+  await page.click('#introBtn');
+  await expect(page.locator('#hintBtn')).toBeEnabled();
+});
+
 test('every listed country has a map shape and its capital sits inside it', async ({ page }) => {
   const bad = await page.evaluate(() => {
     const geo = window.PP.decodeTopo(window.WORLD_TOPO);

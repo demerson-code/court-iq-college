@@ -168,6 +168,16 @@
     line-height: 1.05; letter-spacing: -0.01em; text-wrap: balance; margin: 2px 0 4px;
   }
   .prompt .sub { font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
+  .prompt .hint { margin-top: 8px; pointer-events: auto; }
+  .hint-btn {
+    padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel);
+    color: var(--navy); font-size: 12.5px; font-weight: 600;
+  }
+  .hint-btn:hover:not(:disabled) { background: var(--panel-2); }
+  .hint-btn:disabled { color: var(--muted); cursor: default; }
+  .hint-text { max-width: 46ch; margin: 0 auto; padding: 7px 10px; border-radius: 8px; background: rgba(245,196,81,0.22);
+    color: var(--ink); font-size: 13px; line-height: 1.35; text-wrap: balance; }
+  .result .pts .bonus.hintcost { color: var(--pin); }
 
   /* ---- result card ------------------------------------------------------- */
   .result {
@@ -351,6 +361,10 @@
       <div class="eyebrow" id="promptEyebrow">Find</div>
       <div class="name" id="promptName">Mongolia</div>
       <div class="sub" id="promptSub">Round 1 · need 500 pts</div>
+      <div class="hint">
+        <button class="hint-btn" id="hintBtn" type="button">Hint (−1,500)</button>
+        <div class="hint-text" id="hintText" hidden></div>
+      </div>
       <div class="timer" id="promptTimer" hidden>
         <div class="timer-track"><div class="timer-fill" id="promptTimerFill"></div></div>
         <span class="timer-num" id="promptTimerNum">12.0</span>
@@ -360,7 +374,7 @@
     <section class="result" id="result" hidden aria-live="polite">
       <h2 id="resTitle"><span id="resTitleText">Mongolia — cleared.</span><span class="chip" id="resChip" hidden></span></h2>
       <p id="resDetail">Your pin was 412 mi from Ulaanbaatar, the capital.</p>
-      <div class="pts" id="resPts">+4,180<span class="bonus" id="resBonus" hidden></span></div>
+      <div class="pts" id="resPts"><span id="resPtsNum">+4,180</span><span class="bonus" id="resBonus" hidden></span><span class="bonus hintcost" id="resHint" hidden></span></div>
       <div class="learn" id="resLearn" hidden>
         <img class="flag" id="resFlag" alt="" width="40" height="27" hidden>
         <div class="learn-text"><div class="hook" id="resHook"></div><div class="near" id="resNear"></div></div>
@@ -422,7 +436,7 @@
               <button type="button" data-k="timer" data-v="true">12 s a round</button>
             </div>
           </div>
-          <p class="opt-note">Teach labels the country and its neighbors on the map after every pin, with its flag and a one-line memory hook. Capitals mode counts only the city: no credit for landing inside the country. With the timer on, a pin that keeps pace with time left adds a speed bonus of up to 1,000; a timed-out pin scores 0 but the round goes on.</p>
+          <p class="opt-note">One hint per round, any pin: it reveals the memory hook and the neighbors, and costs 1,500 off that pin. Teach labels the country and its neighbors on the map after every pin, with its flag and a one-line memory hook. Capitals mode counts only the city: no credit for landing inside the country. With the timer on, a pin that keeps pace with time left adds a speed bonus of up to 1,000; a timed-out pin scores 0 but the round goes on.</p>
         </div>
         <div class="actions">
           <button class="btn" id="startBtn" type="button">Start</button>
