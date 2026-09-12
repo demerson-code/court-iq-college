@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Pinpoint</title>
+<meta name="description" content="A map game. Each round names a country; drop a pin on it. Points fall off with the miles you missed by, and the bar to advance rises every round.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 22'%3E%3Cpath d='M9 21C9 21 1.5 12.6 1.5 8.2A7.5 7.5 0 0 1 16.5 8.2C16.5 12.6 9 21 9 21Z' fill='%23FF5A47'/%3E%3Ccircle cx='9' cy='8.2' r='2.6' fill='%2308131C'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Pinpoint is a night-atlas: one committed dark theme, colors painted explicitly. */
+  :root {
+    color-scheme: dark;
+    --ground: #08131C;
+    --panel: #10202F;
+    --panel-2: #172C3E;
+    --line: #27425A;
+    --ink: #F2EBDC;
+    --ink-2: #B9C6CE;
+    --muted: #7F95A4;
+    --gold: #F5C451;
+    --pin: #FF5A47;
+    --good: #7BD389;
+    --display: 'Bricolage Grotesque', 'Helvetica Neue', Arial, sans-serif;
+    --body: 'IBM Plex Sans', 'Segoe UI', Helvetica, Arial, sans-serif;
+    --mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font: 15px/1.45 var(--body);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+  .app { height: 100%; display: grid; grid-template-rows: auto 1fr; }
+
+  /* ---- top bar ---------------------------------------------------------- */
+  .hud {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+    font-variant-numeric: tabular-nums;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-family: var(--display); font-weight: 800; font-size: 20px; letter-spacing: 0.02em; }
+  .brand svg { width: 18px; height: 22px; }
+  .stats { display: flex; gap: 18px; margin-left: auto; }
+  .stat { display: grid; gap: 1px; }
+  .stat .k { font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-weight: 600; font-size: 17px; line-height: 1.2; }
+  .bar-pill {
+    display: grid; gap: 1px; padding: 6px 12px; border-radius: 8px;
+    background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .bar-pill .k { font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  .bar-pill .v { font-family: var(--mono); font-weight: 600; font-size: 15px; color: var(--gold); line-height: 1.25; }
+  .bar-pill .v small { font-family: var(--body); font-weight: 500; font-size: 12px; color: var(--ink-2); margin-left: 6px; }
+
+  /* ---- map ------------------------------------------------------------- */
+  .stage { position: relative; min-height: 0; }
+  canvas#map { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  .zoom {
+    position: absolute; right: 12px; bottom: 12px; display: grid; gap: 4px;
+  }
+  .zoom button {
+    width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink); font-family: var(--mono); font-weight: 600; font-size: 16px;
+  }
+  .zoom button:hover { background: var(--panel-2); }
+
+  /* ---- floating prompt --------------------------------------------------- */
+  .prompt {
+    position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    text-align: center; padding: 10px 22px 12px; border-radius: 12px;
+    background: rgba(16, 32, 47, 0.92); border: 1px solid var(--line);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); pointer-events: none;
+    max-width: calc(100% - 32px);
+  }
+  .prompt .eyebrow { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+  .prompt .name {
+    font-family: var(--display); font-weight: 800; font-size: clamp(26px, 4.5vw, 44px);
+    line-height: 1.05; letter-spacing: -0.01em; text-wrap: balance; margin: 2px 0 4px;
+  }
+  .prompt .sub { font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); }
+
+  /* ---- result card ------------------------------------------------------- */
+  .result {
+    position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+    width: min(520px, calc(100% - 32px)); padding: 16px 18px 14px; border-radius: 14px;
+    background: rgba(16, 32, 47, 0.96); border: 1px solid var(--line);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+    display: grid; grid-template-columns: 1fr auto; gap: 6px 16px; align-items: center;
+    --need: 10%;
+  }
+  .result h2 { margin: 0; font-family: var(--display); font-weight: 800; font-size: 21px; line-height: 1.15; text-wrap: balance; }
+  .result p { margin: 0; color: var(--ink-2); font-size: 14px; }
+  .result .pts {
+    grid-column: 2; grid-row: 1 / span 2; font-family: var(--mono); font-weight: 600; font-size: 34px;
+    color: var(--good); line-height: 1; text-align: right; align-self: center;
+  }
+  .result.fail .pts { color: var(--pin); }
+  .result.bullseye .pts { color: var(--gold); }
+  .result .track {
+    grid-column: 1 / -1; position: relative; height: 8px; border-radius: 4px; background: var(--panel-2); margin-top: 6px; overflow: visible;
+  }
+  .result .fill { height: 100%; border-radius: 4px; background: var(--good); width: 0; transition: width 320ms ease-out; }
+  .result.fail .fill { background: var(--pin); }
+  .result.bullseye .fill { background: var(--gold); }
+  .result .track::after {
+    content: ''; position: absolute; top: -4px; bottom: -4px; left: var(--need); width: 2px; background: var(--ink);
+  }
+  .result .foot { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 4px; }
+  .result .need { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .btn {
+    padding: 9px 18px; border-radius: 9px; border: 1px solid transparent;
+    background: var(--gold); color: #1A1406; font-weight: 600; font-size: 14px;
+  }
+  .btn:hover { filter: brightness(1.06); }
+  .btn.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
+
+  /* ---- modal screens ------------------------------------------------------ */
+  .screen {
+    position: absolute; inset: 0; display: grid; place-items: center; padding: 16px;
+    background: rgba(8, 19, 28, 0.72); backdrop-filter: blur(2px);
+  }
+  .card {
+    width: min(460px, 100%); padding: 26px 26px 22px; border-radius: 16px;
+    background: var(--panel); border: 1px solid var(--line); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  }
+  .card h1 { margin: 0 0 4px; font-family: var(--display); font-weight: 800; font-size: 40px; line-height: 1; letter-spacing: -0.01em; }
+  .card .tag { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .rules { display: grid; gap: 10px; margin: 0 0 20px; padding: 0; list-style: none; }
+  .rules li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; align-items: start; color: var(--ink-2); font-size: 14px; }
+  .rules svg { width: 20px; height: 20px; margin-top: 1px; }
+  .rules b { color: var(--ink); font-weight: 600; }
+  .card .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .card .best { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .final { display: flex; align-items: baseline; gap: 12px; margin: 8px 0 4px; }
+  .final .num { font-family: var(--mono); font-weight: 600; font-size: 48px; line-height: 1; color: var(--gold); }
+  .final .lbl { color: var(--ink-2); font-size: 14px; }
+  .why { color: var(--ink-2); font-size: 14px; margin: 8px 0 18px; }
+
+  @media (max-width: 560px) {
+    .hud { gap: 10px; padding: 8px 12px; }
+    .brand { font-size: 17px; }
+    .stats { gap: 12px; }
+    .stat .v { font-size: 15px; }
+    .bar-pill { width: 100%; }
+    .result { padding: 12px 14px; gap: 4px 12px; }
+    .result h2 { font-size: 18px; }
+    .result .pts { font-size: 28px; }
+    .card h1 { font-size: 34px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .result .fill { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="hud">
+    <div class="brand" aria-label="Pinpoint">
+      <svg viewBox="0 0 18 22" aria-hidden="true"><path d="M9 21C9 21 1.5 12.6 1.5 8.2A7.5 7.5 0 0 1 16.5 8.2C16.5 12.6 9 21 9 21Z" fill="#FF5A47"/><circle cx="9" cy="8.2" r="2.6" fill="#08131C"/></svg>
+      PINPOINT
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="k">Round</span><span class="v" id="hudRound">–</span></div>
+      <div class="stat"><span class="k">Score</span><span class="v" id="hudScore">0</span></div>
+      <div class="stat"><span class="k">Best</span><span class="v" id="hudBest">0</span></div>
+    </div>
+    <div class="bar-pill" title="Score at least this many points on the round to advance">
+      <span class="k">Bar to clear</span>
+      <span class="v"><span id="hudBarNeed">500</span><small id="hudBarMiles">within 2,250 mi</small></span>
+    </div>
+  </header>
+
+  <div class="stage">
+    <canvas id="map" aria-label="World map. Click to place your pin."></canvas>
+
+    <div class="zoom" aria-label="Zoom">
+      <button id="zoomIn" type="button" title="Zoom in (+)">+</button>
+      <button id="zoomOut" type="button" title="Zoom out (−)">−</button>
+      <button id="zoomFit" type="button" title="Fit the whole map (0)">⤢</button>
+    </div>
+
+    <div class="prompt" id="prompt" hidden>
+      <div class="eyebrow">Find</div>
+      <div class="name" id="promptName">Mongolia</div>
+      <div class="sub" id="promptSub">Round 1 · need 500 pts</div>
+    </div>
+
+    <section class="result" id="result" hidden aria-live="polite">
+      <h2 id="resTitle">Mongolia — cleared.</h2>
+      <p id="resDetail">Your pin was 412 mi from Ulaanbaatar, the capital.</p>
+      <div class="pts" id="resPts">+4,180</div>
+      <div class="track"><div class="fill" id="resFill"></div></div>
+      <div class="foot">
+        <span class="need" id="resNeed">needed 500</span>
+        <button class="btn" id="resBtn" type="button">Next round</button>
+      </div>
+    </section>
+
+    <div class="screen" id="start">
+      <div class="card">
+        <h1>Pinpoint</h1>
+        <div class="tag">A country a round. Drop a pin. Don't miss the bar.</div>
+        <ul class="rules">
+          <li>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 19C10 19 3 11.5 3 7.5A7 7 0 0 1 17 7.5C17 11.5 10 19 10 19Z" fill="#FF5A47"/><circle cx="10" cy="7.5" r="2.4" fill="#08131C"/></svg>
+            <span><b>Click where the country is.</b> Land the pin anywhere inside it, or within 25 miles of its capital, for the full <b>5,000</b>.</span>
+          </li>
+          <li>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 15 L17 5" stroke="#F2EBDC" stroke-width="1.6" stroke-dasharray="3 2.5" stroke-linecap="round"/><circle cx="3" cy="15" r="2.4" fill="#FF5A47"/><circle cx="17" cy="5" r="2.4" fill="#F5C451"/></svg>
+            <span><b>Miss and the miles cost you.</b> Points fall off with distance to the capital and hit zero at 2,500 miles.</span>
+          </li>
+          <li>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="9" width="16" height="4" rx="2" fill="#172C3E"/><rect x="2" y="9" width="10" height="4" rx="2" fill="#7BD389"/><rect x="13" y="6" width="1.8" height="10" fill="#F2EBDC"/></svg>
+            <span><b>Clear the bar to advance.</b> It starts at 500 points and rises 250 each round. Later rounds pull in harder countries. Fall short once and the run ends.</span>
+          </li>
+        </ul>
+        <div class="actions">
+          <button class="btn" id="startBtn" type="button">Start</button>
+          <span class="best" id="startBest"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="screen" id="over" hidden>
+      <div class="card">
+        <h1>Game over</h1>
+        <div class="final"><span class="num" id="overScore">0</span><span class="lbl" id="overRounds">0 rounds cleared</span></div>
+        <p class="why" id="overWhy"></p>
+        <div class="actions">
+          <button class="btn" id="overBtn" type="button">Play again</button>
+          <span class="best" id="overBest"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="world.js"></script>
+<script src="countries.js"></script>
+<script src="game.js"></script>
+</body>
+</html>

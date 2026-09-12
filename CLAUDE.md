@@ -6,10 +6,25 @@ the repo root via GitHub Pages.
 
 - **Live**: https://demerson-code.github.io/court-iq-college/
 - **Local preview**: `python -m http.server 3460` → http://localhost:3460/
-- **Tests**: `npm test` (Playwright, 10 algorithm assertions, ~4s)
+- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 4 Pinpoint, ~4s)
 - **Deploy**: `git push origin main` (GitHub Pages auto-deploys, 30–90s)
 - **Plan**: `PLAN.md` (untracked by intent — owns the per-block scope; don't
   duplicate it here)
+
+## Pinpoint (`pinpoint/`) — separate map game, same repo
+
+A self-contained geography game served at `/pinpoint/` (four files, no build
+step, shares nothing with the volleyball app). Each round names a country;
+the player clicks the map. Inside the country or within 25 mi of the capital
+= 5,000 pts; otherwise points fall off linearly to 0 at 2,500 mi. A rising
+score bar (500 + 250/round, capped at 4,750) must be cleared to advance.
+
+- `game.js` — rendering (canvas, equirectangular, zoom/pan), scoring, flow.
+  Tunables are the constants at the top. Pure helpers are on `window.PP`.
+- `countries.js` — `[mapName, display, capital, lat, lon, tier]`. `mapName`
+  must match `properties.name` in `world.js`. Tiers gate difficulty by round.
+- `world.js` — world-atlas 110m TopoJSON (ISC, see LICENSE-world-atlas.txt).
+- Best score key: `pinpoint_best_v1`. Tests: `tests/pinpoint.spec.js`.
 
 ## Skill set (do not change without asking)
 
