@@ -24,7 +24,11 @@ score bar (500 + 250/round, capped at 4,750) must be cleared to advance.
 - `countries.js` — `[mapName, display, capital, lat, lon, tier]`. `mapName`
   must match `properties.name` in `world.js`. Tiers gate difficulty by round.
 - `world.js` — world-atlas 110m TopoJSON (ISC, see LICENSE-world-atlas.txt).
-- Best score key: `pinpoint_best_v1`. Tests: `tests/pinpoint.spec.js`.
+- Modes: Countries / Capitals target, region packs (EU/AM/AF/AP), optional
+  12 s timer with speed bonus. Prefs key `pinpoint_prefs_v1`, best
+  `pinpoint_best_v1`, local leaderboard `pinpoint_board_v1`. Inside claude.ai
+  the leaderboard uses the artifact `db` capability instead (collection
+  `scores`, one doc per player per mode+region). Tests: `tests/pinpoint.spec.js`.
 
 ## Skill set (do not change without asking)
 
