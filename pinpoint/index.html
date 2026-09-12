@@ -126,7 +126,7 @@
 
   /* ---- modal screens ------------------------------------------------------ */
   .screen {
-    position: absolute; inset: 0; display: grid; place-items: center; padding: 16px;
+    position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; overflow-y: auto;
     background: rgba(20, 32, 51, 0.55); backdrop-filter: blur(2px);
   }
   .card {
@@ -146,7 +146,59 @@
   .final .lbl { color: var(--ink-2); font-size: 14px; }
   .why { color: var(--ink-2); font-size: 14px; margin: 8px 0 18px; }
 
+  .hud .mode { font-size: 12px; color: var(--on-navy-muted); margin-left: -6px; }
+
+  /* timer under the prompt */
+  .timer { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .timer-track { flex: 1; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+  .timer-fill { height: 100%; width: 100%; background: var(--good); border-radius: 3px; }
+  .timer-num { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--ink-2); min-width: 3.2ch; text-align: right; }
+  .timer.low .timer-fill { background: var(--pin); }
+  .timer.low .timer-num { color: var(--pin); }
+  .result .pts .bonus { display: block; font-size: 12.5px; font-weight: 500; color: var(--amber); margin-top: 4px; }
+
+  /* start-screen options */
+  .options { display: grid; gap: 10px; margin: 0 0 18px; }
+  .opt-row { display: grid; grid-template-columns: 62px 1fr; gap: 10px; align-items: center; }
+  .opt-k { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  .seg { display: flex; flex-wrap: wrap; gap: 4px; }
+  .seg button {
+    padding: 6px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
+    color: var(--ink-2); font-size: 13px; font-weight: 500;
+  }
+  .seg button:hover { background: var(--panel-2); }
+  .seg button.on { background: var(--navy); border-color: var(--navy); color: var(--on-navy); }
+  .opt-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+
+  /* game-over panels */
+  .card.wide { width: min(720px, 100%); }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 0 0 18px; }
+  .panel h2 { margin: 0 0 6px; font-family: var(--display); font-size: 15px; font-weight: 800; color: var(--navy); }
+  .recap, .board { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; max-height: 220px; overflow-y: auto; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .recap-row, .board-row { display: grid; grid-template-columns: 2ch 1fr auto auto; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 6px; }
+  .recap-row:nth-child(odd), .board-row:nth-child(odd) { background: var(--panel-2); }
+  .recap-row .n, .board-row .n { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .recap-row .name, .board-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .recap-row .mi, .board-row .rounds { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .recap-row .pts, .board-row .pts { font-family: var(--mono); font-weight: 600; color: var(--good); }
+  .recap-row.bull .pts { color: var(--amber); }
+  .recap-row.miss { background: rgba(224, 69, 47, 0.10); }
+  .recap-row.miss .pts { color: var(--pin); }
+  .board-row.me { outline: 2px solid var(--gold); outline-offset: -2px; }
+  .board-empty { color: var(--muted); font-size: 13px; padding: 4px 6px; }
+  .board-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+  .board-form input {
+    flex: 1; min-width: 120px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink); font: inherit; font-size: 13px;
+  }
+  .board-form input:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+  .btn.small { padding: 7px 12px; font-size: 13px; }
+  .board-status { font-size: 12.5px; color: var(--muted); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
   @media (max-width: 560px) {
+    .two-col { grid-template-columns: 1fr; }
+    .opt-row { grid-template-columns: 1fr; gap: 4px; }
     .hud { gap: 10px; padding: 8px 12px; }
     .brand { font-size: 17px; }
     .stats { gap: 12px; }
@@ -169,6 +221,7 @@
       <svg viewBox="0 0 18 22" aria-hidden="true"><path d="M9 21C9 21 1.5 12.6 1.5 8.2A7.5 7.5 0 0 1 16.5 8.2C16.5 12.6 9 21 9 21Z" fill="#FF5A47"/><circle cx="9" cy="8.2" r="2.6" fill="#FFFFFF"/></svg>
       PINPOINT
     </div>
+    <div class="mode" id="hudMode">Countries · World</div>
     <div class="stats">
       <div class="stat"><span class="k">Round</span><span class="v" id="hudRound">–</span></div>
       <div class="stat"><span class="k">Score</span><span class="v" id="hudScore">0</span></div>
@@ -190,15 +243,19 @@
     </div>
 
     <div class="prompt" id="prompt" hidden>
-      <div class="eyebrow">Find</div>
+      <div class="eyebrow" id="promptEyebrow">Find</div>
       <div class="name" id="promptName">Mongolia</div>
       <div class="sub" id="promptSub">Round 1 · need 500 pts</div>
+      <div class="timer" id="promptTimer" hidden>
+        <div class="timer-track"><div class="timer-fill" id="promptTimerFill"></div></div>
+        <span class="timer-num" id="promptTimerNum">12.0</span>
+      </div>
     </div>
 
     <section class="result" id="result" hidden aria-live="polite">
       <h2 id="resTitle">Mongolia — cleared.</h2>
       <p id="resDetail">Your pin was 412 mi from Ulaanbaatar, the capital.</p>
-      <div class="pts" id="resPts">+4,180</div>
+      <div class="pts" id="resPts">+4,180<span class="bonus" id="resBonus" hidden></span></div>
       <div class="track"><div class="fill" id="resFill"></div></div>
       <div class="foot">
         <span class="need" id="resNeed">needed 500</span>
@@ -224,6 +281,33 @@
             <span><b>Clear the bar to advance.</b> It starts at 500 points and rises 250 each round. Later rounds pull in harder countries. Fall short once and the run ends.</span>
           </li>
         </ul>
+        <div class="options" id="options">
+          <div class="opt-row">
+            <span class="opt-k">Target</span>
+            <div class="seg" role="group" aria-label="Target">
+              <button type="button" data-k="mode" data-v="countries">Countries</button>
+              <button type="button" data-k="mode" data-v="capitals">Capitals</button>
+            </div>
+          </div>
+          <div class="opt-row">
+            <span class="opt-k">Region</span>
+            <div class="seg" role="group" aria-label="Region">
+              <button type="button" data-k="region" data-v="world">World</button>
+              <button type="button" data-k="region" data-v="EU">Europe</button>
+              <button type="button" data-k="region" data-v="AM">Americas</button>
+              <button type="button" data-k="region" data-v="AF">Africa</button>
+              <button type="button" data-k="region" data-v="AP">Asia &amp; Pacific</button>
+            </div>
+          </div>
+          <div class="opt-row">
+            <span class="opt-k">Timer</span>
+            <div class="seg" role="group" aria-label="Timer">
+              <button type="button" data-k="timer" data-v="false">Off</button>
+              <button type="button" data-k="timer" data-v="true">12 s a round</button>
+            </div>
+          </div>
+          <p class="opt-note">Capitals mode counts only the city: no credit for landing inside the country. With the timer on, beating the bar with time left adds a speed bonus of up to 1,000.</p>
+        </div>
         <div class="actions">
           <button class="btn" id="startBtn" type="button">Start</button>
           <span class="best" id="startBest"></span>
@@ -232,10 +316,26 @@
     </div>
 
     <div class="screen" id="over" hidden>
-      <div class="card">
+      <div class="card wide">
         <h1>Game over</h1>
         <div class="final"><span class="num" id="overScore">0</span><span class="lbl" id="overRounds">0 rounds cleared</span></div>
         <p class="why" id="overWhy"></p>
+        <div class="two-col">
+          <section class="panel">
+            <h2>Round by round</h2>
+            <ol class="recap" id="overRecap"></ol>
+          </section>
+          <section class="panel">
+            <h2 id="boardTitle">Top scores</h2>
+            <ol class="board" id="boardList"></ol>
+            <form class="board-form" id="boardForm">
+              <label class="sr" for="boardName">Your name</label>
+              <input id="boardName" type="text" maxlength="24" placeholder="Your name" autocomplete="nickname">
+              <button class="btn small" id="boardSave" type="submit">Save score</button>
+              <span class="board-status" id="boardStatus" aria-live="polite"></span>
+            </form>
+          </section>
+        </div>
         <div class="actions">
           <button class="btn" id="overBtn" type="button">Play again</button>
           <span class="best" id="overBest"></span>

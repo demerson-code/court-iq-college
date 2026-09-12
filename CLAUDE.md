@@ -6,7 +6,7 @@ the repo root via GitHub Pages.
 
 - **Live**: https://demerson-code.github.io/court-iq-college/
 - **Local preview**: `python -m http.server 3460` → http://localhost:3460/
-- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 4 Pinpoint, ~4s)
+- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 7 Pinpoint, ~6s)
 - **Deploy**: `git push origin main` (GitHub Pages auto-deploys, 30–90s)
 - **Plan**: `PLAN.md` (untracked by intent — owns the per-block scope; don't
   duplicate it here)
