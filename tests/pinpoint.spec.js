@@ -12,15 +12,18 @@ test.beforeEach(async ({ page }) => {
 
 test('scoring: bullseye inside country, linear falloff, zero far away', async ({ page }) => {
   const r = await page.evaluate(() => {
-    const { pointsFor, haversineMi, barFor, milesForPoints, MAX_PTS } = window.PP;
+    const { pointsFor, haversineMi, barFor, avgNeedFor, difficultyFor, milesForPoints, MAX_PTS, PINS_PER_ROUND } = window.PP;
     return {
       inside: pointsFor(900, true),
       nearCapital: pointsFor(20, false),
       half: pointsFor(1250, false),
       far: pointsFor(2600, false),
       nyToLondon: Math.round(haversineMi(40.71, -74.01, 51.51, -0.13)),
-      bar1: barFor(1), bar10: barFor(10), bar30: barFor(30),
-      miAt4750: milesForPoints(4750),
+      pins: PINS_PER_ROUND,
+      avg1: avgNeedFor(1), avg4: avgNeedFor(4), avg30: avgNeedFor(30),
+      bar1: barFor(1), bar2: barFor(2),
+      d1: difficultyFor(1), d5: difficultyFor(5), d9: difficultyFor(9),
+      miAtAvg1: milesForPoints(avgNeedFor(1)),
       max: MAX_PTS,
     };
   });
@@ -30,10 +33,16 @@ test('scoring: bullseye inside country, linear falloff, zero far away', async ({
   expect(r.far).toBe(0);
   expect(r.nyToLondon).toBeGreaterThan(3440);
   expect(r.nyToLondon).toBeLessThan(3480);
-  expect(r.bar1).toBe(500);
-  expect(r.bar10).toBe(2750);
-  expect(r.bar30).toBe(4750);
-  expect(r.miAt4750).toBe(125);
+  expect(r.pins).toBe(7);
+  expect(r.avg1).toBe(1500);
+  expect(r.avg4).toBe(3000);
+  expect(r.avg30).toBe(4600);
+  expect(r.bar1).toBe(10500);
+  expect(r.bar2).toBe(14000);
+  expect(r.d1).toBe(1);
+  expect(r.d5).toBe(5);
+  expect(r.d9).toBe(5);
+  expect(r.miAtAvg1).toBe(1750);
 });
 
 test('every listed country has a map shape and its capital sits inside it', async ({ page }) => {
@@ -61,58 +70,109 @@ test('every listed country has a map shape and its capital sits inside it', asyn
   expect(bad).toEqual([]);
 });
 
-test('round flow: a hit advances, a miss ends the game', async ({ page }) => {
+test('round flow: seven pins make a round, the total decides, a missed bar ends the game', async ({ page }) => {
   await page.evaluate(() => window.PP.setPrefs({ mode: 'countries', region: 'world', timer: false }));
   await page.click('#startBtn');
   await expect(page.locator('#prompt')).toBeVisible();
+  await expect(page.locator('#promptSub')).toContainText('Round 1 · Pin 1 of 7');
 
-  // Round 1: click on the capital itself → 5,000, cleared.
+  // Round 1: seven bullseyes, all on household-name countries.
+  const seen = [];
+  for (let i = 1; i <= 7; i++) {
+    const s = await page.evaluate(() => {
+      const G = window.PP.state();
+      const t = G.target;
+      window.PP.guessLatLon(t.lat, t.lon);
+      return { round: G.round, pin: G.pin, pts: G.guess.pts, phase: G.phase, tier: t.tier, name: t.name };
+    });
+    seen.push(s);
+    expect(s.round).toBe(1);
+    expect(s.pin).toBe(i);
+    expect(s.pts).toBe(5000);
+    expect(s.tier).toBe(1);
+    if (i < 7) {
+      expect(s.phase).toBe('result');
+      await expect(page.locator('#resBtn')).toHaveText('Next pin');
+    } else {
+      expect(s.phase).toBe('roundEnd');
+      await expect(page.locator('#resBtn')).toHaveText('Start round 2');
+      await expect(page.locator('#resNeed')).toContainText('Round 1 cleared: 35,000 of 10,500');
+    }
+    await page.waitForTimeout(550); await page.click('#resBtn');
+  }
+  expect(new Set(seen.map((s) => s.name)).size).toBe(7); // no repeats within a run
+
+  // Round 2 draws from difficulty 2, and one bad pin does not end the round.
   let s = await page.evaluate(() => {
-    const G = window.PP.state();
-    window.PP.guessLatLon(G.target.lat, G.target.lon);
-    return { phase: G.phase, pts: G.guess.pts, inside: G.guess.inside, score: G.score, round: G.round };
-  });
-  expect(s.round).toBe(1);
-  expect(s.pts).toBe(5000);
-  expect(s.phase).toBe('result');
-  await expect(page.locator('#result')).toBeVisible();
-  await expect(page.locator('#resBtn')).toHaveText('Next round');
-
-  await page.waitForTimeout(550); await page.click('#resBtn');
-  s = await page.evaluate(() => { const G = window.PP.state(); return { round: G.round, phase: G.phase }; });
-  expect(s.round).toBe(2);
-  expect(s.phase).toBe('guess');
-
-  // Round 2: click on the far side of the world → 0 points, game over.
-  s = await page.evaluate(() => {
     const G = window.PP.state();
     const lon = G.target.lon > 0 ? G.target.lon - 180 : G.target.lon + 180;
     window.PP.guessLatLon(-G.target.lat, lon);
-    return { phase: G.phase, pts: G.guess.pts, score: G.score };
+    return { round: G.round, pin: G.pin, pts: G.guess.pts, phase: G.phase, tier: G.target.tier, score: G.score };
   });
+  expect(s.round).toBe(2);
+  expect(s.pin).toBe(1);
   expect(s.pts).toBe(0);
-  expect(s.phase).toBe('over');
-  expect(s.score).toBe(5000);
+  expect(s.tier).toBe(2);
+  expect(s.phase).toBe('result');
+  expect(s.score).toBe(35000);
+
+  // Six more misses: round total 0 < 14,000 -> game over after the seventh pin.
+  for (let i = 2; i <= 7; i++) {
+    await page.waitForTimeout(550); await page.click('#resBtn');
+    s = await page.evaluate(() => {
+      const G = window.PP.state();
+      const lon = G.target.lon > 0 ? G.target.lon - 180 : G.target.lon + 180;
+      window.PP.guessLatLon(-G.target.lat, lon);
+      return { pin: G.pin, phase: G.phase };
+    });
+    expect(s.pin).toBe(i);
+    expect(s.phase).toBe(i < 7 ? 'result' : 'over');
+  }
   await expect(page.locator('#resBtn')).toHaveText('See final score');
   await page.waitForTimeout(550); await page.click('#resBtn');
   await expect(page.locator('#over')).toBeVisible();
-  await expect(page.locator('#overScore')).toHaveText('5,000');
+  await expect(page.locator('#overScore')).toHaveText('35,000');
   await expect(page.locator('#overRounds')).toContainText('1 round cleared');
 
   // Best score persisted.
   const best = await page.evaluate(() => JSON.parse(localStorage.getItem('pinpoint_best_v1')));
-  expect(best).toEqual({ score: 5000, rounds: 1 });
+  expect(best).toEqual({ score: 35000, rounds: 1 });
 
-  // Recap lists both rounds, the last one marked as the miss.
-  await expect(page.locator('#overRecap .recap-row')).toHaveCount(2);
-  await expect(page.locator('#overRecap .recap-row.miss')).toHaveCount(1);
+  // Recap: two round headers, 14 pin rows, round 2 marked missed.
+  await expect(page.locator('#overRecap .recap-head')).toHaveCount(2);
+  await expect(page.locator('#overRecap .recap-row')).toHaveCount(14);
+  await expect(page.locator('#overRecap .recap-head.miss')).toHaveCount(1);
 
   // Local leaderboard (no artifact db in a plain browser): save and read back.
   await page.fill('#boardName', 'Dan');
   await page.click('#boardSave');
   await expect(page.locator('#boardStatus')).toHaveText('Saved.');
   await expect(page.locator('#boardList .board-row')).toHaveCount(1);
-  await expect(page.locator('#boardList .board-row .pts')).toHaveText('5,000');
+  await expect(page.locator('#boardList .board-row .pts')).toHaveText('35,000');
+});
+
+test('difficulty climbs by round: 1 to 5 then stays', async ({ page }) => {
+  const r = await page.evaluate(() => {
+    window.PP.setPrefs({ mode: 'countries', region: 'world', timer: false });
+    const out = [];
+    window.PP.startGame();
+    for (let round = 1; round <= 7; round++) {
+      const tiers = [];
+      for (let pin = 1; pin <= 7; pin++) {
+        const G = window.PP.state();
+        tiers.push(G.target.tier);
+        window.PP.guessLatLon(G.target.lat, G.target.lon);
+        G.revealedAt = null;
+        window.PP.advance();
+      }
+      out.push(tiers);
+    }
+    return out;
+  });
+  r.forEach((tiers, i) => {
+    const want = Math.min(5, i + 1);
+    for (const t of tiers) expect(t).toBe(want);
+  });
 });
 
 test('capitals mode: inside the country is not a bullseye, only the city is', async ({ page }) => {
@@ -148,7 +208,7 @@ test('region packs only draw from that region', async ({ page }) => {
   expect(r.offRegion).toEqual([]);
 });
 
-test('timer: running out ends the game with 0 points; a fast clear earns a bonus', async ({ page }) => {
+test('timer: a timed-out pin scores 0 and the round continues; a fast on-pace pin earns a bonus', async ({ page }) => {
   await page.evaluate(() => window.PP.setPrefs({ mode: 'countries', region: 'world', timer: true }));
   await page.click('#startBtn');
   await expect(page.locator('#promptTimer')).toBeVisible();
@@ -165,11 +225,13 @@ test('timer: running out ends the game with 0 points; a fast clear earns a bonus
   s = await page.evaluate(() => {
     window.PP.timeOut();
     const G = window.PP.state();
-    return { phase: G.phase, pts: G.guess.pts, timedOut: G.guess.timedOut };
+    return { phase: G.phase, pin: G.pin, pts: G.guess.pts, timedOut: G.guess.timedOut, roundPts: G.roundPts };
   });
-  expect(s.phase).toBe('over');
+  expect(s.pin).toBe(2);
+  expect(s.phase).toBe('result');
   expect(s.pts).toBe(0);
   expect(s.timedOut).toBe(true);
+  expect(s.roundPts).toBe(5000);
   await expect(page.locator('#resTitle')).toContainText("Time's up");
 });
 

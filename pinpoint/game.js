@@ -8,12 +8,13 @@
 //     the BULLSEYE_MI circle counts. Otherwise points fall off linearly with
 //     the distance (in miles) from your pin to the capital, hitting 0 at
 //     ZERO_AT_MI.
-//   * Every round has a score bar you must reach to advance. The bar rises
-//     each round, and later rounds draw from more obscure countries.
-//   * Optional timer: ROUND_SECS per round. Time out and the round scores 0.
-//     Beat the bar with time to spare and a speed bonus (up to SPEED_BONUS)
-//     is added to your total; the bonus never counts toward the bar.
-//   * Miss the bar and the game is over. Score = total points banked.
+//   * A round is PINS_PER_ROUND pins. The round's total must reach the round
+//     bar to advance; the bar rises each round (AVG_START + AVG_STEP per pin,
+//     capped) and the countries move from household names to deep cuts.
+//   * Optional timer: ROUND_SECS per pin. Time out and that pin scores 0.
+//     Clear a pin at pace with time to spare and a speed bonus (up to
+//     SPEED_BONUS) is added to your total; the bonus never counts toward the bar.
+//   * Miss the round bar and the game is over. Score = total points banked.
 //
 // No build step, no framework. `window.PP` exposes the pure pieces for tests.
 
@@ -24,10 +25,12 @@
   const MAX_PTS = 5000;
   const ZERO_AT_MI = 2500;     // 0 points at this distance or more
   const BULLSEYE_MI = 25;      // within this of the capital = full points
-  const BAR_START = 500;       // points needed in round 1
-  const BAR_STEP = 250;        // added each round
-  const BAR_CAP = 4750;        // never asks for more than this (125 mi)
-  const ROUND_SECS = 12;       // timer mode: seconds per round
+  const PINS_PER_ROUND = 7;
+  const AVG_START = 1500;      // round 1: average points per pin needed (within 1,750 mi)
+  const AVG_STEP = 500;        // added to the per-pin pace each round
+  const AVG_CAP = 4600;        // never asks for more than this per pin (200 mi)
+  const MAX_DIFFICULTY = 5;    // countries.js ranks 1 (household names) .. 5 (deep cuts)
+  const ROUND_SECS = 12;       // timer mode: seconds per pin
   const SPEED_BONUS = 1000;    // timer mode: max bonus for an instant answer
   const EARTH_MI = 3958.8;
   const BEST_KEY = 'pinpoint_best_v1';
@@ -85,8 +88,12 @@
     return Math.round(frac * MAX_PTS / 10) * 10;
   }
 
+  // Per-pin pace the round is judged at, and the round total it implies.
+  function avgNeedFor(round) {
+    return Math.min(AVG_CAP, AVG_START + AVG_STEP * (round - 1));
+  }
   function barFor(round) {
-    return Math.min(BAR_CAP, BAR_START + BAR_STEP * (round - 1));
+    return avgNeedFor(round) * PINS_PER_ROUND;
   }
 
   // Distance that scores exactly `pts` — shown so players know the margin.
@@ -94,13 +101,11 @@
     return Math.round((1 - pts / MAX_PTS) * ZERO_AT_MI);
   }
 
-  function tiersFor(round) {
-    if (round <= 5) return [1];
-    if (round <= 12) return [1, 2];
-    return [1, 2, 3];
+  function difficultyFor(round) {
+    return Math.min(MAX_DIFFICULTY, round);
   }
 
-  // Timer mode: bonus for seconds left, only on a cleared round.
+  // Timer mode: bonus for seconds left, only on a pin that kept pace.
   function speedBonus(secsLeft) {
     return Math.round(Math.max(0, Math.min(1, secsLeft / ROUND_SECS)) * SPEED_BONUS / 10) * 10;
   }
@@ -170,8 +175,8 @@
     });
   }
 
-  window.PP = { haversineMi, pointsFor, barFor, milesForPoints, tiersFor, speedBonus, pointInRings, decodeTopo,
-    MAX_PTS, ZERO_AT_MI, BULLSEYE_MI, ROUND_SECS, REGIONS };
+  window.PP = { haversineMi, pointsFor, barFor, avgNeedFor, difficultyFor, milesForPoints, speedBonus, pointInRings, decodeTopo,
+    MAX_PTS, ZERO_AT_MI, BULLSEYE_MI, ROUND_SECS, PINS_PER_ROUND, REGIONS };
 
   // ---- DOM --------------------------------------------------------------
   const $ = (id) => document.getElementById(id);
@@ -242,10 +247,10 @@
   // ---- state ------------------------------------------------------------
   const P = loadPrefs();   // { mode: 'countries'|'capitals', region, timer }
   const G = {
-    phase: 'start',      // start | guess | result | over
-    round: 0, score: 0, used: new Set(), target: null,
+    phase: 'start',      // start | guess | result | roundEnd | over
+    round: 0, pin: 0, roundPts: 0, score: 0, used: new Set(), target: null,
     guess: null,         // {lat, lon, mi, pts, inside, bonus, timedOut}
-    history: [],         // one entry per finished round
+    history: [],         // one entry per finished pin
     best: loadBest(),
     timer: null,         // {t0, id} while a timed round is live
   };
@@ -384,7 +389,7 @@
 
   function draw() {
     const { dpr, s, ox, oy, w, h } = V;
-    const revealed = G.phase === 'result' || G.phase === 'over';
+    const revealed = G.phase === 'result' || G.phase === 'roundEnd' || G.phase === 'over';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = C.page;
     ctx.fillRect(0, 0, w, h);
@@ -424,10 +429,10 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const [cx, cy] = toScreen(...proj(t.lon, t.lat));
 
-    // The bar ring: how close the pin had to be. Built under the map
-    // transform so it scales with zoom, stroked in screen space so the dash
-    // stays crisp.
-    const need = barFor(G.round);
+    // The pace ring: how close a pin has to land to keep this round on pace.
+    // Built under the map transform so it scales with zoom, stroked in screen
+    // space so the dash stays crisp.
+    const need = avgNeedFor(G.round);
     const ringMi = milesForPoints(need);
     if (ringMi > 0) {
       ctx.save();
@@ -491,12 +496,14 @@
 
   function pickTarget() {
     const all = roster();
-    const tiers = tiersFor(G.round);
-    const unused = (ts) => all.filter((c) => ts.includes(c.tier) && !G.used.has(c.mapName));
-    // From round 13 on, lean hard on the obscure tier.
-    let pool = [];
-    if (G.round >= 13 && Math.random() < 0.7) pool = unused([3]);
-    if (!pool.length) pool = unused(tiers);
+    const want = difficultyFor(G.round);
+    const unused = (d) => all.filter((c) => c.tier === d && !G.used.has(c.mapName));
+    let pool = unused(want);
+    // Empty pool (small region pack, or a long run through the deep cuts):
+    // widen one difficulty step at a time, easier and harder alike.
+    for (let k = 1; !pool.length && k < MAX_DIFFICULTY; k++) {
+      pool = pool.concat(unused(want - k), unused(want + k));
+    }
     if (!pool.length) pool = all.filter((c) => !G.used.has(c.mapName));
     if (!pool.length) { G.used.clear(); pool = all.slice(); }
     const t = pool[Math.floor(Math.random() * pool.length)];
@@ -506,12 +513,19 @@
 
   function startGame() {
     stopTimer();
-    G.round = 0; G.score = 0; G.used = new Set(); G.guess = null; G.history = [];
+    G.round = 0; G.pin = 0; G.roundPts = 0; G.score = 0; G.used = new Set(); G.guess = null; G.history = [];
     nextRound();
   }
 
   function nextRound() {
     G.round += 1;
+    G.pin = 0;
+    G.roundPts = 0;
+    nextPin();
+  }
+
+  function nextPin() {
+    G.pin += 1;
     G.target = pickTarget();
     G.guess = null;
     G.phase = 'guess';
@@ -529,9 +543,8 @@
     const capitals = P.mode === 'capitals';
     ui.promptEyebrow.textContent = capitals ? 'Find the capital' : 'Find';
     ui.promptName.textContent = capitals ? t.capital : t.name;
-    ui.promptSub.textContent = capitals
-      ? `${t.name} · Round ${G.round} · need ${fmt(barFor(G.round))} pts`
-      : `Round ${G.round} · need ${fmt(barFor(G.round))} pts`;
+    ui.promptSub.textContent = (capitals ? `${t.name} · ` : '') +
+      `Round ${G.round} · Pin ${G.pin} of ${PINS_PER_ROUND}`;
     ui.promptTimer.hidden = !P.timer;
     if (P.timer) { ui.promptTimerFill.style.width = '100%'; ui.promptTimerNum.textContent = ROUND_SECS.toFixed(1); }
   }
@@ -560,19 +573,12 @@
 
   function timeOut() {
     if (G.phase !== 'guess') return;
-    const t = G.target, need = barFor(G.round);
-    G.guess = { lat: t.lat, lon: t.lon, mi: null, pts: 0, inside: false, bonus: 0, timedOut: true };
-    G.history.push({ name: t.name, capital: t.capital, mi: null, pts: 0, bonus: 0, need, inside: false, timedOut: true });
-    G.phase = 'over';
-    G.revealedAt = performance.now();
-    animateTo(revealTarget(G.guess, t), 600);
-    hide(ui.prompt);
-    showResult();
-    renderHud();
-    snapshot();
+    const t = G.target;
+    settlePin({ lat: t.lat, lon: t.lon, mi: null, pts: 0, inside: false, bonus: 0, timedOut: true });
   }
 
   function handleGuess(px, py) {
+    if (G.phase !== 'guess') return;
     const [x, y] = toMap(px, py);
     const ll = unproj(x, y);
     if (!ll) return; // clicked the page margin, not the globe
@@ -583,16 +589,24 @@
     const inside = P.mode === 'countries' && pointInRings(lon, lat, t.geo.polys);
     const mi = haversineMi(lat, lon, t.lat, t.lon);
     const pts = pointsFor(mi, inside);
-    const need = barFor(G.round);
-    const passed = pts >= need;
-    const bonus = P.timer && passed ? speedBonus(left) : 0;
-    G.guess = { lat, lon, mi, pts, inside, bonus, timedOut: false };
-    G.history.push({ name: t.name, capital: t.capital, mi, pts, bonus, need, inside, timedOut: false });
-    G.score += pts + bonus;
-    G.phase = passed ? 'result' : 'over';
+    const bonus = P.timer && pts >= avgNeedFor(G.round) ? speedBonus(left) : 0;
+    settlePin({ lat, lon, mi, pts, inside, bonus, timedOut: false });
+  }
+
+  // Bank a pin (guessed or timed out), then decide: next pin, round cleared,
+  // or game over.
+  function settlePin(g) {
+    const t = G.target;
+    G.guess = g;
+    G.history.push({ round: G.round, pin: G.pin, name: t.name, capital: t.capital,
+      mi: g.mi, pts: g.pts, bonus: g.bonus, inside: g.inside, timedOut: g.timedOut });
+    G.roundPts += g.pts;
+    G.score += g.pts + g.bonus;
+    if (G.pin < PINS_PER_ROUND) G.phase = 'result';
+    else G.phase = G.roundPts >= barFor(G.round) ? 'roundEnd' : 'over';
     G.revealedAt = performance.now();
 
-    animateTo(revealTarget(G.guess, t), 600);
+    animateTo(revealTarget(g, t), 600);
     hide(ui.prompt);
     showResult();
     renderHud();
@@ -601,11 +615,12 @@
 
   function showResult() {
     const t = G.target, g = G.guess;
-    const need = barFor(G.round);
-    const passed = g.pts >= need;
+    const need = barFor(G.round), pace = avgNeedFor(G.round);
     const capitals = P.mode === 'capitals';
     const shown = capitals ? t.capital : t.name;
-    ui.result.classList.toggle('fail', !passed);
+    const onPace = g.pts >= pace;
+    const left = PINS_PER_ROUND - G.pin;
+    ui.result.classList.toggle('fail', G.phase === 'over' || (G.phase === 'result' && !onPace));
     ui.result.classList.toggle('bullseye', g.pts === MAX_PTS);
     if (g.timedOut) {
       ui.resTitle.textContent = `Time's up. That was ${shown}.`;
@@ -613,7 +628,7 @@
     } else {
       ui.resTitle.textContent = g.pts === MAX_PTS
         ? (g.inside ? `Bullseye. That's ${t.name}.` : `Bullseye. Right on ${t.capital}.`)
-        : passed ? `${shown} — cleared.` : `${shown} — missed the bar.`;
+        : onPace ? `${shown} — on pace.` : `${shown} — under pace.`;
       ui.resDetail.textContent = g.inside
         ? `Your pin landed inside ${t.name}, ${fmt(g.mi)} mi from ${t.capital}.`
         : `Your pin was ${fmt(g.mi)} mi from ${t.capital}${capitals ? '' : ', the capital'}.`;
@@ -621,10 +636,19 @@
     ui.resPts.textContent = `+${fmt(g.pts)}`;
     ui.resBonus.textContent = g.bonus ? `+${fmt(g.bonus)} speed bonus` : '';
     ui.resBonus.hidden = !g.bonus;
-    ui.resNeed.textContent = `needed ${fmt(need)} · within ${fmt(milesForPoints(need))} mi`;
-    ui.resFill.style.width = `${Math.min(100, (g.pts / MAX_PTS) * 100)}%`;
-    ui.result.style.setProperty('--need', `${(need / MAX_PTS) * 100}%`);
-    ui.resBtn.textContent = passed ? 'Next round' : 'See final score';
+    // the track shows the round so far against the round bar
+    ui.resFill.style.width = `${Math.min(100, (G.roundPts / (MAX_PTS * PINS_PER_ROUND)) * 100)}%`;
+    ui.result.style.setProperty('--need', `${(need / (MAX_PTS * PINS_PER_ROUND)) * 100}%`);
+    if (G.phase === 'result') {
+      ui.resNeed.textContent = `Round ${G.round}: ${fmt(G.roundPts)} of ${fmt(need)} · ${left} pin${left === 1 ? '' : 's'} left`;
+      ui.resBtn.textContent = 'Next pin';
+    } else if (G.phase === 'roundEnd') {
+      ui.resNeed.textContent = `Round ${G.round} cleared: ${fmt(G.roundPts)} of ${fmt(need)} needed`;
+      ui.resBtn.textContent = `Start round ${G.round + 1}`;
+    } else {
+      ui.resNeed.textContent = `Round ${G.round} missed: ${fmt(G.roundPts)} of ${fmt(need)} needed`;
+      ui.resBtn.textContent = 'See final score';
+    }
     show(ui.result);
     ui.resBtn.focus({ preventScroll: true });
   }
@@ -633,22 +657,21 @@
     // On touch screens the tap that dropped the pin also fires a click a beat
     // later, and by then the result button sits under the finger. Ignore the
     // button until the card has been on screen for a moment.
-    if (performance.now() - (G.revealedAt || 0) < 500) return;
-    if (G.phase === 'result') nextRound();
+    if (G.revealedAt && performance.now() - G.revealedAt < 500) return;
+    if (G.phase === 'result') nextPin();
+    else if (G.phase === 'roundEnd') nextRound();
     else if (G.phase === 'over') showOver();
   }
 
   function showOver() {
     const rounds = G.round - 1;
-    const t = G.target, g = G.guess;
     const isBest = G.score > G.best.score;
     if (isBest) { G.best = { score: G.score, rounds }; saveBest(); }
     ui.overScore.textContent = fmt(G.score);
     ui.overRounds.textContent = `${rounds} round${rounds === 1 ? '' : 's'} cleared · ${modeLabel()}`;
-    ui.overWhy.textContent = g.timedOut
-      ? `${t.name} ended it: the clock ran out before you dropped a pin. The bar was ${fmt(barFor(G.round))}.`
-      : `${t.name} ended it: your pin was ${fmt(g.mi)} mi from ${t.capital}, ` +
-        `worth ${fmt(g.pts)} points when the bar was ${fmt(barFor(G.round))}.`;
+    ui.overWhy.textContent =
+      `Round ${G.round} ended it: ${fmt(G.roundPts)} points against a bar of ${fmt(barFor(G.round))}. ` +
+      `That round asked for an average of ${fmt(avgNeedFor(G.round))} a pin, about ${fmt(milesForPoints(avgNeedFor(G.round)))} mi from each capital.`;
     ui.overBest.textContent = isBest
       ? 'New personal best.'
       : `Personal best: ${fmt(G.best.score)} (${G.best.rounds} rounds).`;
@@ -674,9 +697,21 @@
 
   function renderRecap() {
     ui.overRecap.replaceChildren();
-    G.history.forEach((h, i) => {
-      const row = el('li', 'recap-row' + (h.pts >= h.need ? '' : ' miss') + (h.pts === MAX_PTS ? ' bull' : ''));
-      row.append(el('span', 'n', String(i + 1)));
+    let round = 0;
+    G.history.forEach((h) => {
+      if (h.round !== round) {
+        round = h.round;
+        const pts = G.history.filter((x) => x.round === round).reduce((a, x) => a + x.pts, 0);
+        const need = barFor(round), done = G.history.filter((x) => x.round === round).length === PINS_PER_ROUND;
+        const cleared = done && pts >= need;
+        const head = el('li', 'recap-head' + (done ? (cleared ? ' ok' : ' miss') : ''));
+        head.append(el('span', 'name', `Round ${round}`));
+        head.append(el('span', 'pts', `${fmt(pts)} / ${fmt(need)}${done ? (cleared ? ' · cleared' : ' · missed') : ''}`));
+        ui.overRecap.append(head);
+      }
+      const pace = avgNeedFor(h.round);
+      const row = el('li', 'recap-row' + (h.pts >= pace ? '' : ' low') + (h.pts === MAX_PTS ? ' bull' : ''));
+      row.append(el('span', 'n', String(h.pin)));
       row.append(el('span', 'name', P.mode === 'capitals' ? `${h.capital}, ${h.name}` : h.name));
       row.append(el('span', 'mi', h.timedOut ? 'time out' : h.inside ? 'inside' : `${fmt(h.mi)} mi`));
       row.append(el('span', 'pts', `${fmt(h.pts)}${h.bonus ? ` +${fmt(h.bonus)}` : ''}`));
@@ -685,12 +720,14 @@
   }
 
   function renderHud() {
-    const need = barFor(Math.max(1, G.round));
+    const r = Math.max(1, G.round);
     ui.round.textContent = G.round ? String(G.round) : '–';
     ui.score.textContent = fmt(G.score);
     ui.best.textContent = fmt(Math.max(G.best.score, G.score));
-    ui.barNeed.textContent = fmt(need);
-    ui.barMiles.textContent = `within ${fmt(milesForPoints(need))} mi`;
+    ui.barNeed.textContent = fmt(barFor(r));
+    ui.barMiles.textContent = G.round
+      ? `${fmt(G.roundPts)} so far · pin ${G.pin}/${PINS_PER_ROUND}`
+      : `${PINS_PER_ROUND} pins · ${fmt(avgNeedFor(1))} a pin`;
     ui.hudMode.textContent = modeLabel();
   }
 
@@ -707,7 +744,7 @@
     const n = roster().length;
     ui.startBest.textContent = G.best.score
       ? `Personal best: ${fmt(G.best.score)} points over ${G.best.rounds} rounds.`
-      : `${n} ${P.mode === 'capitals' ? 'capitals' : 'countries'} in play. One miss ends the run.`;
+      : `${n} ${P.mode === 'capitals' ? 'capitals' : 'countries'} in play, ${PINS_PER_ROUND} a round.`;
   }
   ui.options.addEventListener('click', (e) => {
     const b = e.target.closest('button[data-k]');
@@ -814,15 +851,15 @@
   function snapshot() {
     if (!window.claude?.hot?.snapshot) return;
     window.claude.hot.snapshot({
-      phase: G.phase, round: G.round, score: G.score,
+      phase: G.phase, round: G.round, pin: G.pin, roundPts: G.roundPts, score: G.score,
       used: [...G.used], target: G.target?.mapName, guess: G.guess, history: G.history,
     });
   }
   function restore(d) {
-    if (!d || !d.target || !['guess', 'result', 'over'].includes(d.phase)) return false;
+    if (!d || !d.target || !['guess', 'result', 'roundEnd', 'over'].includes(d.phase)) return false;
     const t = ROSTER.find((c) => c.mapName === d.target);
     if (!t) return false;
-    G.round = d.round; G.score = d.score; G.used = new Set(d.used); G.target = t;
+    G.round = d.round; G.pin = d.pin || 1; G.roundPts = d.roundPts || 0; G.score = d.score; G.used = new Set(d.used); G.target = t;
     G.guess = d.guess; G.phase = d.phase; G.history = d.history || [];
     hide(ui.start); hide(ui.over); hide(ui.result); hide(ui.prompt);
     renderHud();
@@ -953,6 +990,7 @@
     handleGuess(px, py);
   };
   window.PP.timeOut = () => { stopTimer(); timeOut(); };
+  window.PP.nextPin = nextPin;
   window.PP.advance = advance;
   window.PP._viewCenter = () => toMap(V.w / 2, V.h / 2);
   window.PP._unproj = (px, py) => unproj(...toMap(px, py));

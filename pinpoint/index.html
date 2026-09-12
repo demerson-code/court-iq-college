@@ -188,13 +188,18 @@
   .recap, .board { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; max-height: 220px; overflow-y: auto; font-size: 13px; font-variant-numeric: tabular-nums; }
   .recap-row, .board-row { display: grid; grid-template-columns: 2ch 1fr auto auto; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 6px; }
   .recap-row:nth-child(odd), .board-row:nth-child(odd) { background: var(--panel-2); }
+  .recap { max-height: 260px; }
   .recap-row .n, .board-row .n { color: var(--muted); font-family: var(--mono); font-size: 12px; }
   .recap-row .name, .board-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .recap-row .mi, .board-row .rounds { color: var(--muted); font-family: var(--mono); font-size: 12px; }
   .recap-row .pts, .board-row .pts { font-family: var(--mono); font-weight: 600; color: var(--good); }
   .recap-row.bull .pts { color: var(--amber); }
-  .recap-row.miss { background: rgba(224, 69, 47, 0.10); }
-  .recap-row.miss .pts { color: var(--pin); }
+  .recap-row.low .pts { color: var(--pin); }
+  .recap-head { display: flex; justify-content: space-between; gap: 8px; padding: 6px 6px 2px; margin-top: 4px; font-weight: 600; color: var(--navy); border-bottom: 1px solid var(--line); background: none !important; }
+  .recap-head:first-child { margin-top: 0; }
+  .recap-head .pts { font-family: var(--mono); font-weight: 600; font-size: 12px; color: var(--muted); }
+  .recap-head.ok .pts { color: var(--good); }
+  .recap-head.miss .pts { color: var(--pin); }
   .board-row.me { outline: 2px solid var(--gold); outline-offset: -2px; }
   .board-empty { color: var(--muted); font-size: 13px; padding: 4px 6px; }
   .board-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
@@ -241,9 +246,9 @@
       <div class="stat"><span class="k">Score</span><span class="v" id="hudScore">0</span></div>
       <div class="stat"><span class="k">Best</span><span class="v" id="hudBest">0</span></div>
     </div>
-    <div class="bar-pill" title="Score at least this many points on the round to advance">
-      <span class="k">Bar to clear</span>
-      <span class="v"><span id="hudBarNeed">500</span><small id="hudBarMiles">within 2,250 mi</small></span>
+    <div class="bar-pill" title="The round's 7 pins must add up to at least this to advance">
+      <span class="k">Round bar</span>
+      <span class="v"><span id="hudBarNeed">10,500</span><small id="hudBarMiles">7 pins · 1,500 a pin</small></span>
     </div>
   </header>
 
@@ -272,15 +277,15 @@
       <div class="pts" id="resPts">+4,180<span class="bonus" id="resBonus" hidden></span></div>
       <div class="track"><div class="fill" id="resFill"></div></div>
       <div class="foot">
-        <span class="need" id="resNeed">needed 500</span>
-        <button class="btn" id="resBtn" type="button">Next round</button>
+        <span class="need" id="resNeed">Round 1: 4,180 of 10,500 · 6 pins left</span>
+        <button class="btn" id="resBtn" type="button">Next pin</button>
       </div>
     </section>
 
     <div class="screen" id="start">
       <div class="card">
         <h1>Pinpoint</h1>
-        <div class="tag">A country a round. Drop a pin. Don't miss the bar.</div>
+        <div class="tag">Seven pins a round. Clear the bar. Every round gets harder.</div>
         <ul class="rules">
           <li>
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 19C10 19 3 11.5 3 7.5A7 7 0 0 1 17 7.5C17 11.5 10 19 10 19Z" fill="#FF5A47"/><circle cx="10" cy="7.5" r="2.4" fill="#FFFFFF"/></svg>
@@ -292,7 +297,7 @@
           </li>
           <li>
             <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="9" width="16" height="4" rx="2" fill="#EEF3F6"/><rect x="2" y="9" width="10" height="4" rx="2" fill="#2E8B57"/><rect x="13" y="6" width="1.8" height="10" fill="#2F3F5C"/></svg>
-            <span><b>Clear the bar to advance.</b> It starts at 500 points and rises 250 each round. Later rounds pull in harder countries. Fall short once and the run ends.</span>
+            <span><b>Seven pins make a round.</b> Their total must clear the round bar: 10,500 in round 1, rising 3,500 a round. Round 1 is household names; by round 5 it's the deep cuts. Miss the bar and the run ends.</span>
           </li>
         </ul>
         <div class="options" id="options">
@@ -320,7 +325,7 @@
               <button type="button" data-k="timer" data-v="true">12 s a round</button>
             </div>
           </div>
-          <p class="opt-note">Capitals mode counts only the city: no credit for landing inside the country. With the timer on, beating the bar with time left adds a speed bonus of up to 1,000.</p>
+          <p class="opt-note">Capitals mode counts only the city: no credit for landing inside the country. With the timer on, a pin that keeps pace with time left adds a speed bonus of up to 1,000; a timed-out pin scores 0 but the round goes on.</p>
         </div>
         <div class="actions">
           <button class="btn" id="startBtn" type="button">Start</button>

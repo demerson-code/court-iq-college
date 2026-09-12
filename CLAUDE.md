@@ -6,7 +6,7 @@ the repo root via GitHub Pages.
 
 - **Live**: https://demerson-code.github.io/court-iq-college/
 - **Local preview**: `python -m http.server 3460` → http://localhost:3460/
-- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 7 Pinpoint, ~6s)
+- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 8 Pinpoint, ~14s)
 - **Deploy**: `git push origin main` (GitHub Pages auto-deploys, 30–90s)
 - **Plan**: `PLAN.md` (untracked by intent — owns the per-block scope; don't
   duplicate it here)
@@ -14,15 +14,18 @@ the repo root via GitHub Pages.
 ## Pinpoint (`pinpoint/`) — separate map game, same repo
 
 A self-contained geography game served at `/pinpoint/` (four files, no build
-step, shares nothing with the volleyball app). Each round names a country;
-the player clicks the map. Inside the country or within 25 mi of the capital
-= 5,000 pts; otherwise points fall off linearly to 0 at 2,500 mi. A rising
-score bar (500 + 250/round, capped at 4,750) must be cleared to advance.
+step, shares nothing with the volleyball app). A round is 7 pins; each names
+a country and the player clicks the map. Inside the country or within 25 mi
+of the capital = 5,000 pts; otherwise points fall off linearly to 0 at
+2,500 mi. The round's total must clear a bar of 7 × pace, where pace is
+1,500/pin in round 1 and rises 500 a round (cap 4,600). Round r draws from
+difficulty min(r, 5).
 
 - `game.js` — rendering (canvas, Mercator projection, animated zoom/pan), scoring, flow.
   Tunables are the constants at the top. Pure helpers are on `window.PP`.
-- `countries.js` — `[mapName, display, capital, lat, lon, tier, region]`. `mapName`
-  must match `properties.name` in `world.js`. Tiers gate difficulty by round.
+- `countries.js` — `[mapName, display, capital, lat, lon, difficulty, region]`.
+  `mapName` must match `properties.name` in `world.js`. Difficulty 1..5 is
+  "how well an American knows it": 1 household names … 5 deep cuts.
 - `world.js` — world-atlas 50m TopoJSON, 755 KB (ISC, see LICENSE-world-atlas.txt).
   Rings crossing 180° are split at decode time or they stroke across the map.
 - Modes: Countries / Capitals target, region packs (EU/AM/AF/AP), optional
