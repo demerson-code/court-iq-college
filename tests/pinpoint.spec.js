@@ -73,6 +73,10 @@ test('every listed country has a map shape and its capital sits inside it', asyn
 test('round flow: seven pins make a round, the total decides, a missed bar ends the game', async ({ page }) => {
   await page.evaluate(() => window.PP.setPrefs({ mode: 'countries', region: 'world', timer: false }));
   await page.click('#startBtn');
+  await expect(page.locator('#intro')).toBeVisible();
+  await expect(page.locator('#introRound')).toHaveText('Round 1');
+  await expect(page.locator('#introNeed')).toContainText('You need 10,500 points across 7 pins to reach round 2');
+  await page.click('#introBtn');
   await expect(page.locator('#prompt')).toBeVisible();
   await expect(page.locator('#promptSub')).toContainText('Round 1 · Pin 1 of 7');
 
@@ -95,11 +99,16 @@ test('round flow: seven pins make a round, the total decides, a missed bar ends 
       await expect(page.locator('#resBtn')).toHaveText('Next pin');
     } else {
       expect(s.phase).toBe('roundEnd');
-      await expect(page.locator('#resBtn')).toHaveText('Start round 2');
+      await expect(page.locator('#resBtn')).toHaveText('Continue');
       await expect(page.locator('#resNeed')).toContainText('Round 1 cleared: 35,000 of 10,500');
     }
     await page.waitForTimeout(550); await page.click('#resBtn');
   }
+  // Round 2 announcement: previous round result + the new bar.
+  await expect(page.locator('#intro')).toBeVisible();
+  await expect(page.locator('#introPrev')).toHaveText('Round 1 cleared with 35,000 points.');
+  await expect(page.locator('#introNeed')).toContainText('You need 14,000 points');
+  await page.click('#introBtn');
   expect(new Set(seen.map((s) => s.name)).size).toBe(7); // no repeats within a run
 
   // Round 2 draws from difficulty 2, and one bad pin does not end the round.
@@ -157,6 +166,7 @@ test('difficulty climbs by round: 1 to 5 then stays', async ({ page }) => {
     const out = [];
     window.PP.startGame();
     for (let round = 1; round <= 7; round++) {
+      window.PP.beginRound();
       const tiers = [];
       for (let pin = 1; pin <= 7; pin++) {
         const G = window.PP.state();
@@ -177,7 +187,7 @@ test('difficulty climbs by round: 1 to 5 then stays', async ({ page }) => {
 
 test('capitals mode: inside the country is not a bullseye, only the city is', async ({ page }) => {
   await page.evaluate(() => window.PP.setPrefs({ mode: 'capitals', region: 'world', timer: false }));
-  await page.click('#startBtn');
+  await page.click('#startBtn'); await page.click('#introBtn');
   await expect(page.locator('#promptEyebrow')).toHaveText('Find the capital');
   const s = await page.evaluate(() => {
     const G = window.PP.state();
@@ -198,7 +208,7 @@ test('region packs only draw from that region', async ({ page }) => {
     const n = window.PP.roster().length;
     const names = new Set();
     for (let i = 0; i < 30; i++) {
-      window.PP.startGame();
+      window.PP.startGame(); window.PP.beginRound();
       names.add(window.PP.state().target.mapName);
     }
     const regionOf = new Map(window.COUNTRIES.map((c) => [c[0], c[6]]));
@@ -210,7 +220,7 @@ test('region packs only draw from that region', async ({ page }) => {
 
 test('timer: a timed-out pin scores 0 and the round continues; a fast on-pace pin earns a bonus', async ({ page }) => {
   await page.evaluate(() => window.PP.setPrefs({ mode: 'countries', region: 'world', timer: true }));
-  await page.click('#startBtn');
+  await page.click('#startBtn'); await page.click('#introBtn');
   await expect(page.locator('#promptTimer')).toBeVisible();
   let s = await page.evaluate(() => {
     const G = window.PP.state();
@@ -236,7 +246,7 @@ test('timer: a timed-out pin scores 0 and the round continues; a fast on-pace pi
 });
 
 test('a real mouse click on the canvas places the pin', async ({ page }) => {
-  await page.click('#startBtn');
+  await page.click('#startBtn'); await page.click('#introBtn');
   const box = await page.locator('#map').boundingBox();
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   const s = await page.evaluate(() => { const G = window.PP.state(); return { hasGuess: !!G.guess, phase: G.phase }; });

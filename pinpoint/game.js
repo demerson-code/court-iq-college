@@ -39,6 +39,7 @@
   const BOARD_KEY = 'pinpoint_board_v1';
 
   const REGIONS = { world: 'World', EU: 'Europe', AM: 'Americas', AF: 'Africa', AP: 'Asia & Pacific' };
+  const DIFF_LABELS = { 1: 'Household names', 2: 'Well known', 3: 'Getting harder', 4: 'Obscure', 5: 'Deep cuts' };
 
   // ---- map geometry -----------------------------------------------------
   // Web Mercator (the Google Maps projection), cropped to the inhabited band.
@@ -191,6 +192,8 @@
     result: $('result'), resTitle: $('resTitle'), resDetail: $('resDetail'),
     resPts: $('resPts'), resBonus: $('resBonus'), resFill: $('resFill'), resNeed: $('resNeed'), resBtn: $('resBtn'),
     start: $('start'), startBtn: $('startBtn'), startBest: $('startBest'), options: $('options'),
+    intro: $('intro'), introPrev: $('introPrev'), introRound: $('introRound'), introDiff: $('introDiff'),
+    introNeed: $('introNeed'), introPace: $('introPace'), introBtn: $('introBtn'), scorePop: $('scorePop'),
     over: $('over'), overScore: $('overScore'), overRounds: $('overRounds'),
     overWhy: $('overWhy'), overBest: $('overBest'), overBtn: $('overBtn'), overRecap: $('overRecap'),
     boardTitle: $('boardTitle'), boardList: $('boardList'), boardName: $('boardName'),
@@ -247,8 +250,8 @@
   // ---- state ------------------------------------------------------------
   const P = loadPrefs();   // { mode: 'countries'|'capitals', region, timer }
   const G = {
-    phase: 'start',      // start | guess | result | roundEnd | over
-    round: 0, pin: 0, roundPts: 0, score: 0, used: new Set(), target: null,
+    phase: 'start',      // start | intro | guess | result | roundEnd | over
+    round: 0, pin: 0, roundPts: 0, lastRoundPts: null, score: 0, used: new Set(), target: null,
     guess: null,         // {lat, lon, mi, pts, inside, bonus, timedOut}
     history: [],         // one entry per finished pin
     best: loadBest(),
@@ -518,9 +521,40 @@
   }
 
   function nextRound() {
+    G.lastRoundPts = G.round ? G.roundPts : null;
     G.round += 1;
     G.pin = 0;
     G.roundPts = 0;
+    G.guess = null;
+    G.phase = 'intro';
+    hide(ui.prompt); hide(ui.result); hide(ui.start); hide(ui.over);
+    animateTo(fitTarget(), 450);
+    renderHud();
+    showIntro();
+    draw();
+    snapshot();
+  }
+
+  // The round announcement: what this round asks for, in plain words.
+  function showIntro() {
+    const r = G.round, need = barFor(r), pace = avgNeedFor(r);
+    ui.introPrev.hidden = G.lastRoundPts == null;
+    if (G.lastRoundPts != null) {
+      ui.introPrev.textContent = `Round ${r - 1} cleared with ${fmt(G.lastRoundPts)} points.`;
+    }
+    ui.introRound.textContent = `Round ${r}`;
+    ui.introDiff.textContent = `${DIFF_LABELS[difficultyFor(r)]} · ${P.mode === 'capitals' ? 'capitals' : 'countries'} · ${REGIONS[P.region]}`;
+    ui.introNeed.textContent = `You need ${fmt(need)} points across ${PINS_PER_ROUND} pins to reach round ${r + 1}.`;
+    ui.introPace.textContent = `That's ${fmt(pace)} a pin on average, about ${fmt(milesForPoints(pace))} miles from each capital. ` +
+      `A pin inside the country${P.mode === 'capitals' ? '' : ' or'} within 25 miles of the capital is worth the full ${fmt(MAX_PTS)}.`;
+    ui.introBtn.textContent = r === 1 ? 'Drop the first pin' : `Play round ${r}`;
+    show(ui.intro);
+    ui.introBtn.focus({ preventScroll: true });
+  }
+
+  function beginRound() {
+    if (G.phase !== 'intro') return;
+    hide(ui.intro);
     nextPin();
   }
 
@@ -610,7 +644,18 @@
     hide(ui.prompt);
     showResult();
     renderHud();
+    popScore(g.pts + g.bonus);
     snapshot();
+  }
+
+  // "+4,660" floats up from the score in the top bar.
+  function popScore(n) {
+    if (!n) return;
+    const pop = ui.scorePop;
+    pop.textContent = `+${fmt(n)}`;
+    pop.classList.remove('go');
+    void pop.offsetWidth; // restart the animation
+    pop.classList.add('go');
   }
 
   function showResult() {
@@ -644,7 +689,7 @@
       ui.resBtn.textContent = 'Next pin';
     } else if (G.phase === 'roundEnd') {
       ui.resNeed.textContent = `Round ${G.round} cleared: ${fmt(G.roundPts)} of ${fmt(need)} needed`;
-      ui.resBtn.textContent = `Start round ${G.round + 1}`;
+      ui.resBtn.textContent = 'Continue';
     } else {
       ui.resNeed.textContent = `Round ${G.round} missed: ${fmt(G.roundPts)} of ${fmt(need)} needed`;
       ui.resBtn.textContent = 'See final score';
@@ -851,19 +896,23 @@
   function snapshot() {
     if (!window.claude?.hot?.snapshot) return;
     window.claude.hot.snapshot({
-      phase: G.phase, round: G.round, pin: G.pin, roundPts: G.roundPts, score: G.score,
+      phase: G.phase, round: G.round, pin: G.pin, roundPts: G.roundPts, lastRoundPts: G.lastRoundPts, score: G.score,
       used: [...G.used], target: G.target?.mapName, guess: G.guess, history: G.history,
     });
   }
   function restore(d) {
-    if (!d || !d.target || !['guess', 'result', 'roundEnd', 'over'].includes(d.phase)) return false;
+    if (!d || !d.target || !['intro', 'guess', 'result', 'roundEnd', 'over'].includes(d.phase)) return false;
     const t = ROSTER.find((c) => c.mapName === d.target);
     if (!t) return false;
     G.round = d.round; G.pin = d.pin || 1; G.roundPts = d.roundPts || 0; G.score = d.score; G.used = new Set(d.used); G.target = t;
     G.guess = d.guess; G.phase = d.phase; G.history = d.history || [];
-    hide(ui.start); hide(ui.over); hide(ui.result); hide(ui.prompt);
+    hide(ui.start); hide(ui.over); hide(ui.result); hide(ui.prompt); hide(ui.intro);
     renderHud();
-    if (d.phase === 'guess') {
+    if (d.phase === 'intro') {
+      G.lastRoundPts = d.lastRoundPts == null ? null : d.lastRoundPts;
+      fitAll();
+      showIntro();
+    } else if (d.phase === 'guess') {
       fitAll();
       renderPrompt();
       show(ui.prompt);
@@ -947,10 +996,11 @@
   ui.zoomFit.addEventListener('click', () => animateTo(fitTarget(), 400));
 
   ui.startBtn.addEventListener('click', startGame);
+  ui.introBtn.addEventListener('click', beginRound);
   ui.resBtn.addEventListener('click', advance);
   ui.overBtn.addEventListener('click', () => {
     // back to the start screen so mode / region / timer can change between runs
-    hide(ui.over); show(ui.start); G.phase = 'start'; G.guess = null;
+    hide(ui.over); hide(ui.intro); show(ui.start); G.phase = 'start'; G.guess = null; G.round = 0; G.pin = 0; G.roundPts = 0; G.lastRoundPts = null;
     renderOptions(); animateTo(fitTarget(), 400);
     ui.startBtn.focus({ preventScroll: true });
   });
@@ -959,7 +1009,8 @@
     const tag = e.target && e.target.tagName;
     if (tag === 'BUTTON' || tag === 'INPUT') return; // the focused control handles Enter/Space itself
     if (e.key === 'Enter' || e.key === ' ') {
-      if (G.phase === 'result' || (G.phase === 'over' && ui.over.hidden)) { e.preventDefault(); advance(); }
+      if (G.phase === 'result' || G.phase === 'roundEnd' || (G.phase === 'over' && ui.over.hidden)) { e.preventDefault(); advance(); }
+      else if (G.phase === 'intro') { e.preventDefault(); beginRound(); }
       else if (G.phase === 'start') { e.preventDefault(); startGame(); }
     }
     if (e.key === '+' || e.key === '=') zoomAt(V.w / 2, V.h / 2, 1.4, 240);
@@ -991,6 +1042,7 @@
   };
   window.PP.timeOut = () => { stopTimer(); timeOut(); };
   window.PP.nextPin = nextPin;
+  window.PP.beginRound = beginRound;
   window.PP.advance = advance;
   window.PP._viewCenter = () => toMap(V.w / 2, V.h / 2);
   window.PP._unproj = (px, py) => unproj(...toMap(px, py));

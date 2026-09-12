@@ -71,6 +71,19 @@
   .stat { display: grid; gap: 1px; }
   .stat .k { font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--on-navy-muted); }
   .stat .v { font-family: var(--mono); font-weight: 600; font-size: 17px; line-height: 1.2; }
+  .stat.score { position: relative; }
+  .stat.score .v { font-family: var(--display); font-weight: 800; font-size: 30px; line-height: 1; color: var(--gold); letter-spacing: -0.01em; }
+  .stat.score .pop {
+    position: absolute; left: 0; top: 100%; font-family: var(--mono); font-weight: 600; font-size: 15px;
+    color: var(--gold); opacity: 0; pointer-events: none; white-space: nowrap;
+  }
+  .stat.score .pop.go { animation: pop 1400ms ease-out forwards; }
+  @keyframes pop {
+    0% { opacity: 0; transform: translateY(6px); }
+    15% { opacity: 1; transform: translateY(0); }
+    70% { opacity: 1; transform: translateY(-4px); }
+    100% { opacity: 0; transform: translateY(-14px); }
+  }
   .bar-pill {
     display: grid; gap: 1px; padding: 6px 12px; border-radius: 8px;
     background: rgba(255, 255, 255, 0.10); border: 1px solid rgba(255, 255, 255, 0.18);
@@ -157,6 +170,16 @@
   .final .lbl { color: var(--ink-2); font-size: 14px; }
   .why { color: var(--ink-2); font-size: 14px; margin: 8px 0 18px; }
 
+  /* round announcement */
+  .card.intro { text-align: center; padding-top: 30px; }
+  .card.intro .prev { display: inline-block; margin-bottom: 14px; padding: 5px 12px; border-radius: 999px; background: rgba(46, 139, 87, 0.12); color: var(--good); font-weight: 600; font-size: 13px; }
+  .card.intro h1 { font-size: 52px; margin-bottom: 6px; }
+  .card.intro .tag { margin-bottom: 16px; }
+  .card.intro .need { margin: 0 0 8px; font-family: var(--display); font-weight: 800; font-size: 21px; line-height: 1.25; color: var(--ink); text-wrap: balance; }
+  .card.intro .pace { margin: 0 0 22px; color: var(--ink-2); font-size: 14px; text-wrap: balance; }
+  .card.intro .actions { justify-content: center; }
+  .card.intro .btn { padding: 12px 26px; font-size: 16px; }
+
   .hud .mode { font-size: 12px; color: var(--on-navy-muted); margin-left: -6px; }
 
   /* timer under the prompt */
@@ -222,6 +245,8 @@
     .brand { font-size: 17px; }
     .stats { gap: 12px; }
     .stat .v { font-size: 15px; }
+    .stat.score .v { font-size: 24px; }
+    .card.intro h1 { font-size: 40px; }
     .bar-pill { width: 100%; }
     .result { padding: 12px 14px; gap: 4px 12px; }
     .result h2 { font-size: 18px; }
@@ -230,6 +255,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .result .fill { transition: none; }
+    .stat.score .pop.go { animation: none; opacity: 0; }
   }
 </style>
 </head>
@@ -243,7 +269,7 @@
     <div class="mode" id="hudMode">Countries · World</div>
     <div class="stats">
       <div class="stat"><span class="k">Round</span><span class="v" id="hudRound">–</span></div>
-      <div class="stat"><span class="k">Score</span><span class="v" id="hudScore">0</span></div>
+      <div class="stat score"><span class="k">Score</span><span class="v" id="hudScore">0</span><span class="pop" id="scorePop" aria-hidden="true"></span></div>
       <div class="stat"><span class="k">Best</span><span class="v" id="hudBest">0</span></div>
     </div>
     <div class="bar-pill" title="The round's 7 pins must add up to at least this to advance">
@@ -330,6 +356,19 @@
         <div class="actions">
           <button class="btn" id="startBtn" type="button">Start</button>
           <span class="best" id="startBest"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="screen" id="intro" hidden>
+      <div class="card intro">
+        <div class="prev" id="introPrev" hidden></div>
+        <h1 id="introRound">Round 1</h1>
+        <div class="tag" id="introDiff">Household names · countries · World</div>
+        <p class="need" id="introNeed">You need 10,500 points across 7 pins to reach round 2.</p>
+        <p class="pace" id="introPace"></p>
+        <div class="actions">
+          <button class="btn" id="introBtn" type="button">Drop the first pin</button>
         </div>
       </div>
     </div>
