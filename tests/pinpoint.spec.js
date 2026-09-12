@@ -78,7 +78,7 @@ test('round flow: a hit advances, a miss ends the game', async ({ page }) => {
   await expect(page.locator('#result')).toBeVisible();
   await expect(page.locator('#resBtn')).toHaveText('Next round');
 
-  await page.click('#resBtn');
+  await page.waitForTimeout(550); await page.click('#resBtn');
   s = await page.evaluate(() => { const G = window.PP.state(); return { round: G.round, phase: G.phase }; });
   expect(s.round).toBe(2);
   expect(s.phase).toBe('guess');
@@ -94,7 +94,7 @@ test('round flow: a hit advances, a miss ends the game', async ({ page }) => {
   expect(s.phase).toBe('over');
   expect(s.score).toBe(5000);
   await expect(page.locator('#resBtn')).toHaveText('See final score');
-  await page.click('#resBtn');
+  await page.waitForTimeout(550); await page.click('#resBtn');
   await expect(page.locator('#over')).toBeVisible();
   await expect(page.locator('#overScore')).toHaveText('5,000');
   await expect(page.locator('#overRounds')).toContainText('1 round cleared');
@@ -161,7 +161,7 @@ test('timer: running out ends the game with 0 points; a fast clear earns a bonus
   expect(s.bonus).toBeGreaterThan(800);
   expect(s.bonus).toBeLessThanOrEqual(s.bonusMax);
   expect(s.score).toBe(5000 + s.bonus);
-  await page.click('#resBtn');
+  await page.waitForTimeout(550); await page.click('#resBtn');
   s = await page.evaluate(() => {
     window.PP.timeOut();
     const G = window.PP.state();

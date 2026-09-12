@@ -564,6 +564,7 @@
     G.guess = { lat: t.lat, lon: t.lon, mi: null, pts: 0, inside: false, bonus: 0, timedOut: true };
     G.history.push({ name: t.name, capital: t.capital, mi: null, pts: 0, bonus: 0, need, inside: false, timedOut: true });
     G.phase = 'over';
+    G.revealedAt = performance.now();
     animateTo(revealTarget(G.guess, t), 600);
     hide(ui.prompt);
     showResult();
@@ -589,6 +590,7 @@
     G.history.push({ name: t.name, capital: t.capital, mi, pts, bonus, need, inside, timedOut: false });
     G.score += pts + bonus;
     G.phase = passed ? 'result' : 'over';
+    G.revealedAt = performance.now();
 
     animateTo(revealTarget(G.guess, t), 600);
     hide(ui.prompt);
@@ -628,6 +630,10 @@
   }
 
   function advance() {
+    // On touch screens the tap that dropped the pin also fires a click a beat
+    // later, and by then the result button sits under the finger. Ignore the
+    // button until the card has been on screen for a moment.
+    if (performance.now() - (G.revealedAt || 0) < 500) return;
     if (G.phase === 'result') nextRound();
     else if (G.phase === 'over') showOver();
   }
@@ -949,4 +955,5 @@
   window.PP.timeOut = () => { stopTimer(); timeOut(); };
   window.PP.advance = advance;
   window.PP._viewCenter = () => toMap(V.w / 2, V.h / 2);
+  window.PP._unproj = (px, py) => unproj(...toMap(px, py));
 })();
