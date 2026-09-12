@@ -306,10 +306,21 @@
   function clampView() { Object.assign(V, clamped(V)); }
   function stopAnim() { anim = null; goal = null; }
 
-  function animateTo(to, ms) {
+  // Ease to a target view. The map point under `anchor` (a screen point,
+  // default the centre) moves in a straight line from where it is now to
+  // where it ends up, while the scale eases geometrically. Interpolating
+  // scale and offsets separately made the view drift through the wrong spot
+  // mid-flight before landing, which read as "zoom to one place, then jump".
+  function animateTo(to, ms, anchor) {
     to = clamped(to);
     if (reduceMotion || !ms) { stopAnim(); Object.assign(V, to); draw(); return; }
-    anim = { from: { s: V.s, ox: V.ox, oy: V.oy }, to, t0: performance.now(), ms };
+    const [ax, ay] = anchor || [V.w / 2, V.h / 2];
+    anim = {
+      s0: V.s, s1: to.s, ax, ay,
+      m0: [(ax - V.ox) / V.s, (ay - V.oy) / V.s],   // map point under the anchor now
+      m1: [(ax - to.ox) / to.s, (ay - to.oy) / to.s], // map point under the anchor at the end
+      t0: performance.now(), ms,
+    };
     goal = to;
     if (!raf) raf = requestAnimationFrame(tick);
   }
@@ -318,10 +329,10 @@
     if (!anim) return;
     const p = Math.min(1, (now - anim.t0) / anim.ms);
     const e = 1 - Math.pow(1 - p, 3); // ease-out cubic
-    const { from, to } = anim;
-    V.s = from.s * Math.pow(to.s / from.s, e);
-    V.ox = from.ox + (to.ox - from.ox) * e;
-    V.oy = from.oy + (to.oy - from.oy) * e;
+    const { s0, s1, ax, ay, m0, m1 } = anim;
+    const s = s0 * Math.pow(s1 / s0, e);
+    const mx = m0[0] + (m1[0] - m0[0]) * e, my = m0[1] + (m1[1] - m0[1]) * e;
+    V.s = s; V.ox = ax - mx * s; V.oy = ay - my * s;
     clampView();
     draw();
     if (p < 1) raf = requestAnimationFrame(tick); else stopAnim();
@@ -339,7 +350,7 @@
     const base = goal || V;
     const ns = Math.min(V.sMax, Math.max(V.sMin, base.s * factor));
     const k = ns / base.s;
-    animateTo({ s: ns, ox: px - (px - base.ox) * k, oy: py - (py - base.oy) * k }, ms);
+    animateTo({ s: ns, ox: px - (px - base.ox) * k, oy: py - (py - base.oy) * k }, ms, [px, py]);
   }
 
   // Frame a set of map-unit points with padding (used after a guess).
@@ -937,4 +948,5 @@
   };
   window.PP.timeOut = () => { stopTimer(); timeOut(); };
   window.PP.advance = advance;
+  window.PP._viewCenter = () => toMap(V.w / 2, V.h / 2);
 })();
