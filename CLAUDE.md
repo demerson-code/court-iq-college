@@ -19,11 +19,12 @@ the player clicks the map. Inside the country or within 25 mi of the capital
 = 5,000 pts; otherwise points fall off linearly to 0 at 2,500 mi. A rising
 score bar (500 + 250/round, capped at 4,750) must be cleared to advance.
 
-- `game.js` — rendering (canvas, equirectangular, zoom/pan), scoring, flow.
+- `game.js` — rendering (canvas, Mercator projection, animated zoom/pan), scoring, flow.
   Tunables are the constants at the top. Pure helpers are on `window.PP`.
-- `countries.js` — `[mapName, display, capital, lat, lon, tier]`. `mapName`
+- `countries.js` — `[mapName, display, capital, lat, lon, tier, region]`. `mapName`
   must match `properties.name` in `world.js`. Tiers gate difficulty by round.
-- `world.js` — world-atlas 110m TopoJSON (ISC, see LICENSE-world-atlas.txt).
+- `world.js` — world-atlas 50m TopoJSON, 755 KB (ISC, see LICENSE-world-atlas.txt).
+  Rings crossing 180° are split at decode time or they stroke across the map.
 - Modes: Countries / Capitals target, region packs (EU/AM/AF/AP), optional
   12 s timer with speed bonus. Prefs key `pinpoint_prefs_v1`, best
   `pinpoint_best_v1`, local leaderboard `pinpoint_board_v1`. Inside claude.ai
