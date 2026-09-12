@@ -2,7 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2F3F5C">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Pinpoint">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <title>Pinpoint</title>
 <meta name="description" content="A map game. Each round names a country; drop a pin on it. Points fall off with the miles you missed by, and the bar to advance rises every round.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 22'%3E%3Cpath d='M9 21C9 21 1.5 12.6 1.5 8.2A7.5 7.5 0 0 1 16.5 8.2C16.5 12.6 9 21 9 21Z' fill='%23FF5A47'/%3E%3Ccircle cx='9' cy='8.2' r='2.6' fill='%23FFFFFF'/%3E%3C/svg%3E">
@@ -37,6 +43,8 @@
   html, body { height: 100%; }
   body {
     margin: 0;
+    height: 100vh; height: 100dvh;
+    touch-action: manipulation;
     background: var(--ground);
     color: var(--ink);
     font: 15px/1.45 var(--body);
@@ -52,6 +60,9 @@
   .hud {
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
     padding: 10px 16px; background: var(--navy); color: var(--on-navy);
+    padding-top: calc(10px + env(safe-area-inset-top));
+    padding-left: calc(16px + env(safe-area-inset-left));
+    padding-right: calc(16px + env(safe-area-inset-right));
     font-variant-numeric: tabular-nums;
   }
   .brand { display: flex; align-items: center; gap: 8px; font-family: var(--display); font-weight: 800; font-size: 20px; letter-spacing: 0.02em; }
@@ -70,8 +81,8 @@
 
   /* ---- map ------------------------------------------------------------- */
   .stage { position: relative; min-height: 0; }
-  canvas#map { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
-  .zoom { position: absolute; right: 12px; bottom: 12px; display: grid; gap: 4px; }
+  canvas#map { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  .zoom { position: absolute; right: calc(12px + env(safe-area-inset-right)); bottom: calc(12px + env(safe-area-inset-bottom)); display: grid; gap: 4px; }
   .zoom button {
     width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--line);
     background: var(--panel); color: var(--navy); font-family: var(--mono); font-weight: 600; font-size: 16px;
@@ -96,7 +107,7 @@
 
   /* ---- result card ------------------------------------------------------- */
   .result {
-    position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+    position: absolute; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); transform: translateX(-50%);
     width: min(520px, calc(100% - 32px)); padding: 16px 18px 14px; border-radius: 14px;
     background: rgba(255, 255, 255, 0.97); border: 1px solid var(--line);
     box-shadow: 0 16px 40px rgba(20, 32, 51, 0.25);
@@ -189,7 +200,7 @@
   .board-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
   .board-form input {
     flex: 1; min-width: 120px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line);
-    background: var(--panel); color: var(--ink); font: inherit; font-size: 13px;
+    background: var(--panel); color: var(--ink); font: inherit; font-size: 16px;
   }
   .board-form input:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
   .btn.small { padding: 7px 12px; font-size: 13px; }
@@ -197,6 +208,9 @@
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
   @media (max-width: 560px) {
+    /* the result card owns the bottom of a phone screen; park the zoom buttons top-right */
+    .zoom { top: calc(12px + env(safe-area-inset-top)); bottom: auto; }
+    .prompt { max-width: calc(100% - 112px); }
     .two-col { grid-template-columns: 1fr; }
     .opt-row { grid-template-columns: 1fr; gap: 4px; }
     .hud { gap: 10px; padding: 8px 12px; }
