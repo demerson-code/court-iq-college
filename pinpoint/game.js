@@ -470,6 +470,7 @@
     const pts = [proj(t.lon, t.lat)];
     if (!g.timedOut) pts.push(proj(g.lon, g.lat));
     if (P.mode === 'countries') pts.push(...t.geo.bbox);
+    if (G.explore && G.explore !== t.geo) pts.push(...G.explore.bbox);
     return fitPointsTarget(pts);
   }
 
@@ -593,14 +594,54 @@
     G.explore = null;
     ui.exploreTag.hidden = true;
   }
+  // Put the tag where it hides nothing that matters: try spots around the
+  // tapped country and pick the one that overlaps the target shape, the
+  // tapped shape, the two markers and the result card the least.
   function positionExploreTag() {
     if (!G.explore || ui.exploreTag.hidden) return;
-    const [sx, sy] = toScreen(...G.exploreAnchor);
     const w = ui.exploreTag.offsetWidth, h = ui.exploreTag.offsetHeight;
-    let x = sx - w / 2, y = sy - h - 14;
-    x = Math.max(8, Math.min(V.w - w - 8, x));
-    if (y < 8) y = sy + 14;
-    ui.exploreTag.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+    const rect = (bbox) => {
+      const [x0, y0] = toScreen(...bbox[0]), [x1, y1] = toScreen(...bbox[1]);
+      return { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+    };
+    const pad = 8;
+    const shapes = [rect(G.explore.bbox)];
+    if (G.target && G.target.geo !== G.explore) shapes.push(rect(G.target.geo.bbox));
+    const point = (mapXY) => { const [x, y] = toScreen(...mapXY); return { x: x - 16, y: y - 40, w: 32, h: 48 }; };
+    if (G.target) shapes.push(point(proj(G.target.lon, G.target.lat)));
+    if (G.guess && !G.guess.timedOut) shapes.push(point(proj(G.guess.lon, G.guess.lat)));
+    if (!ui.result.hidden) {
+      const r = ui.result.getBoundingClientRect(), c = canvas.getBoundingClientRect();
+      shapes.push({ x: r.left - c.left, y: r.top - c.top, w: r.width, h: r.height });
+    }
+    // neighbour name labels, so the tag does not sit on the very names it is teaching
+    const labelled = new Set([...neighborsOfGeo(G.explore).list, ...(G.target ? neighborsOf(G.target).list : [])]);
+    for (const g of labelled) { const [x, y] = toScreen(...g.label); shapes.push({ x: x - 45, y: y - 9, w: 90, h: 18 }); }
+    const e = shapes[0];
+    const [ax, ay] = toScreen(...G.exploreAnchor);
+    const cands = [
+      { x: ax - w / 2, y: e.y - h - pad },          // above the country, over the tap
+      { x: ax - w / 2, y: e.y + e.h + pad },        // below
+      { x: e.x - w - pad, y: ay - h / 2 },          // left
+      { x: e.x + e.w + pad, y: ay - h / 2 },        // right
+      { x: e.x - w - pad, y: e.y - h - pad },       // corners
+      { x: e.x + e.w + pad, y: e.y - h - pad },
+      { x: e.x - w - pad, y: e.y + e.h + pad },
+      { x: e.x + e.w + pad, y: e.y + e.h + pad },
+      { x: ax - w / 2, y: ay - h - 14 },            // last resort: right at the tap
+    ];
+    const overlap = (a, b) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) *
+                              Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+    let best = null, bestCost = Infinity;
+    cands.forEach((c, i) => {
+      const x = Math.max(pad, Math.min(V.w - w - pad, c.x)), y = Math.max(pad, Math.min(V.h - h - pad, c.y));
+      const r = { x, y, w, h };
+      let cost = i * 40; // mild preference for earlier candidates
+      for (const sh of shapes) cost += overlap(r, sh);
+      cost += (Math.abs(x - c.x) + Math.abs(y - c.y)) * 2; // pushed by the screen edge
+      if (cost < bestCost) { bestCost = cost; best = r; }
+    });
+    ui.exploreTag.style.transform = `translate(${Math.round(best.x)}px, ${Math.round(best.y)}px)`;
   }
 
   function drawMarkers() {
@@ -847,10 +888,10 @@
     else G.phase = G.roundPts >= barFor(G.round) ? 'roundEnd' : 'over';
     G.revealedAt = performance.now();
 
+    autoExplore(g, t);
     animateTo(revealTarget(g, t), 600);
     hide(ui.prompt);
     showResult();
-    autoExplore(g, t);
     renderHud();
     popScore(g.pts + g.bonus);
     const level = g.timedOut ? 0 : celebrationLevel(g.mi);
