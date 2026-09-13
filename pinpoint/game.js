@@ -214,7 +214,7 @@
     zoomIn: $('zoomIn'), zoomOut: $('zoomOut'), zoomFit: $('zoomFit'),
     fx: $('fx'), stamp: $('stamp'), stampT: $('stampT'), stampS: $('stampS'), flash: $('flash'),
     resChip: $('resChip'), stage: document.querySelector('.stage'),
-    resLearn: $('resLearn'), resFlag: $('resFlag'), resHook: $('resHook'), resNear: $('resNear'),
+    resLearn: $('resLearn'), resFlag: $('resFlag'), resHook: $('resHook'), resNear: $('resNear'), resExplore: $('resExplore'),
     exploreTag: $('exploreTag'), exploreKicker: $('exploreKicker'), exploreName: $('exploreName'), exploreCap: $('exploreCap'), exploreHook: $('exploreHook'),
   };
 
@@ -392,6 +392,9 @@
   // Every view change goes through animateTo(), which eases from the current
   // view to a target over a few hundred ms. Drag and pinch set V directly.
   const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Phone-size layout. Everything phone-specific keys off this so desktop is untouched.
+  const narrowMQ = window.matchMedia ? window.matchMedia('(max-width: 560px)') : null;
+  const narrow = () => !!(narrowMQ && narrowMQ.matches);
   let anim = null;   // {from, to, t0, ms}
   let goal = null;   // where the view is heading (wheel notches stack on this)
   let raf = 0;
@@ -440,7 +443,16 @@
     if (p < 1) raf = requestAnimationFrame(tick); else stopAnim();
   }
 
+  const PACK_CENTER = { world: [10, 25], EU: [15, 52], AM: [-80, 15], AF: [20, 5], AP: [100, 25] };
   function fitTarget() {
+    if (narrow() && V.h > V.w) {
+      // Portrait phone: the whole world is a postage stamp, so fill the screen
+      // and let the player pan. Zooming out to the full world is still allowed.
+      const s = Math.max(V.sMin, Math.max(V.w / MW, V.h / MH));
+      const [lon, lat] = PACK_CENTER[P.region] || PACK_CENTER.world;
+      const [cx, cy] = proj(lon, lat);
+      return clamped({ s, ox: V.w / 2 - cx * s, oy: V.h / 2 - cy * s });
+    }
     const s = V.sMin;
     return { s, ox: (V.w - MW * s) / 2, oy: (V.h - MH * s) / 2 };
   }
@@ -460,10 +472,14 @@
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
     const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
     const bw = Math.max(60, x1 - x0), bh = Math.max(60, y1 - y0);
-    const pad = 0.28;
+    // Frame inside the strip above the result card (measured when it is showing).
+    const cardH = ui.result.hidden ? 0 : ui.result.offsetHeight + 16;
+    const top = narrow() ? 8 : 0;
+    const availH = Math.max(120, V.h - cardH - top - 16);
+    const pad = narrow() ? 0.16 : 0.28;
     const s = Math.min(V.sMax, Math.max(V.sMin,
-      Math.min(V.w / (bw * (1 + 2 * pad)), (V.h * 0.72) / (bh * (1 + 2 * pad)))));
-    return { s, ox: V.w / 2 - ((x0 + x1) / 2) * s, oy: V.h * 0.42 - ((y0 + y1) / 2) * s };
+      Math.min(V.w / (bw * (1 + 2 * pad)), availH / (bh * (1 + 2 * pad)))));
+    return { s, ox: V.w / 2 - ((x0 + x1) / 2) * s, oy: top + availH / 2 + 8 - ((y0 + y1) / 2) * s };
   }
   // What to frame after a guess: pin, capital and (in Countries mode) the country.
   function revealTarget(g, t) {
@@ -548,10 +564,11 @@
     ctx.setTransform(V.dpr, 0, 0, V.dpr, 0, 0);
     const done = new Set([t.geo]);
     if (e) done.add(e);
-    for (const g of neighborsOf(t).list) if (!done.has(g)) { done.add(g); mapLabel(g, 12.5, '600', '#1F2F45', 0); }
-    if (e) for (const g of neighborsOfGeo(e).list) if (!done.has(g)) { done.add(g); mapLabel(g, 12.5, '600', '#1F5F86', 0); }
-    if (e) mapLabel(e, 16, '800', '#0F3D5C', -12);
-    mapLabel(t.geo, 18, '800', '#7A4A00', -14);
+    const small = narrow() ? 11 : 12.5, mid = narrow() ? 14 : 16, big = narrow() ? 16 : 18;
+    for (const g of neighborsOf(t).list) if (!done.has(g)) { done.add(g); mapLabel(g, small, '600', '#1F2F45', 0); }
+    if (e) for (const g of neighborsOfGeo(e).list) if (!done.has(g)) { done.add(g); mapLabel(g, small, '600', '#1F5F86', 0); }
+    if (e) mapLabel(e, mid, '800', '#0F3D5C', -12);
+    mapLabel(t.geo, big, '800', '#7A4A00', -14);
   }
   function drawExploreLabels() {
     if (P.teach) return; // drawTeachLabels already covered it
@@ -587,18 +604,22 @@
     ui.exploreHook.textContent = r ? (r.hook || '') : '';
     ui.exploreCap.hidden = !r;
     ui.exploreHook.hidden = !(r && r.hook);
-    ui.exploreTag.hidden = false;
+    ui.exploreTag.hidden = narrow();
+    // phone: the same facts go on the card instead of floating over the map
+    ui.resExplore.textContent = `${kicker === 'Tapped' ? 'Tapped' : 'Your pin landed in'} ${displayName(geo)}${r ? ` (capital ${r.capital})` : ''}.`;
+    ui.resExplore.hidden = !narrow();
     draw();
   }
   function clearExplore() {
     G.explore = null;
     ui.exploreTag.hidden = true;
+    ui.resExplore.hidden = true;
   }
   // Put the tag where it hides nothing that matters: try spots around the
   // tapped country and pick the one that overlaps the target shape, the
   // tapped shape, the two markers and the result card the least.
   function positionExploreTag() {
-    if (!G.explore || ui.exploreTag.hidden) return;
+    if (!G.explore || ui.exploreTag.hidden || narrow()) return;
     const w = ui.exploreTag.offsetWidth, h = ui.exploreTag.offsetHeight;
     const rect = (bbox) => {
       const [x0, y0] = toScreen(...bbox[0]), [x1, y1] = toScreen(...bbox[1]);
@@ -889,9 +910,9 @@
     G.revealedAt = performance.now();
 
     autoExplore(g, t);
-    animateTo(revealTarget(g, t), 600);
     hide(ui.prompt);
     showResult();
+    animateTo(revealTarget(g, t), 600);
     renderHud();
     popScore(g.pts + g.bonus);
     const level = g.timedOut ? 0 : celebrationLevel(g.mi);
@@ -1372,7 +1393,11 @@
       drag = { x: e.clientX, y: e.clientY, ox: V.ox, oy: V.oy, moved: false, id: e.pointerId };
     } else if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
-      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), s: V.s };
+      const rect = canvas.getBoundingClientRect();
+      const midX = (a.x + b.x) / 2 - rect.left, midY = (a.y + b.y) / 2 - rect.top;
+      stopAnim();
+      // remember the map point under the fingers; every move keeps it there
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), s: V.s, m: toMap(midX, midY) };
       if (drag) drag.moved = true;
     }
   });
@@ -1385,10 +1410,10 @@
       const [a, b] = [...pointers.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y);
       const midX = (a.x + b.x) / 2 - rect.left, midY = (a.y + b.y) / 2 - rect.top;
-      stopAnim();
-      const ns = Math.min(V.sMax, Math.max(V.sMin, pinch.s * (d / pinch.d)));
-      const k = ns / V.s;
-      V.ox = midX - (midX - V.ox) * k; V.oy = midY - (midY - V.oy) * k; V.s = ns;
+      const ns = Math.min(V.sMax, Math.max(V.sMin, pinch.s * (d / Math.max(1, pinch.d))));
+      V.s = ns;
+      V.ox = midX - pinch.m[0] * ns;
+      V.oy = midY - pinch.m[1] * ns;
       clampView(); draw();
       return;
     }
@@ -1407,6 +1432,11 @@
     const wasTap = drag && e.pointerId === drag.id && !drag.moved && pointers.size === 1;
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinch = null;
+    if (pointers.size === 1) {
+      // one finger left after a pinch: continue as a drag from where it is now
+      const [id, pt] = [...pointers.entries()][0];
+      drag = { x: pt.x, y: pt.y, ox: V.ox, oy: V.oy, moved: true, id };
+    }
     if (pointers.size === 0) {
       if (wasTap && e.type === 'pointerup') {
         const rect = canvas.getBoundingClientRect();
@@ -1485,6 +1515,8 @@
   window.PP.useHint = useHint;
   window.PP.exploreLatLon = (lat, lon) => { const [px, py] = toScreen(...proj(lon, lat)); exploreAt(px, py); };
   window.PP.clearExplore = clearExplore;
+  window.PP._view = () => ({ s: V.s, ox: V.ox, oy: V.oy, w: V.w, h: V.h });
+  window.PP._toMap = (px, py) => toMap(px, py);
   window.PP.celebrate = (level) => { const G2 = G; const t = G2.target; celebrate(level, { mi: [400, 200, 80, 20, 3][level - 1] }, t); };
   window.PP.advance = advance;
   window.PP._viewCenter = () => toMap(V.w / 2, V.h / 2);

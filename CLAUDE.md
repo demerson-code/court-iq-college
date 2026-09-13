@@ -6,7 +6,7 @@ the repo root via GitHub Pages.
 
 - **Live**: https://demerson-code.github.io/court-iq-college/
 - **Local preview**: `python -m http.server 3460` → http://localhost:3460/
-- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 13 Pinpoint, ~24s)
+- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 14 Pinpoint, ~24s)
 - **Deploy**: `git push origin main` (GitHub Pages auto-deploys, 30–90s)
 - **Plan**: `PLAN.md` (untracked by intent — owns the per-block scope; don't
   duplicate it here)
@@ -40,6 +40,11 @@ difficulty min(r, 5).
 - Fanfare: five tiers by miles from the capital (500 / 250 / 100 / 25 / 5),
   particles on the `#fx` canvas over the map, text stamps + flash in the DOM.
   `CELEBRATE_MI` and `celebrate()` in game.js. Skipped under reduced motion.
+- Phones (`narrow()` = max-width 560px): portrait default view fills the
+  screen centred on the region pack, reveal frames above the measured result
+  card, explore facts go on the card instead of the floating tag, labels are
+  smaller. Pinch keeps the map point under the fingers fixed and hands off to
+  a one-finger drag from the finger's current position. Desktop path untouched.
 - Modes: Countries / Capitals target, region packs (EU/AM/AF/AP), optional
   12 s timer with speed bonus. Prefs key `pinpoint_prefs_v1`, best
   `pinpoint_best_v1`, local leaderboard `pinpoint_board_v1`. Inside claude.ai

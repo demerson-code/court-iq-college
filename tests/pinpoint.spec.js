@@ -155,6 +155,31 @@ test('hints: three a round, one per pin, counter counts up, back to three next r
   await expect(page.locator('#hintCount')).toHaveText('Used 2 of 3 · last one');
 });
 
+test('pinch keeps the map point under the fingers fixed and hands off to one finger cleanly', async ({ page }) => {
+  await page.evaluate(() => window.PP.setPrefs({ mode: 'countries', region: 'world', timer: false }));
+  await page.click('#startBtn'); await page.click('#introBtn');
+  await page.waitForTimeout(600);
+  const r = await page.evaluate(() => {
+    const c = document.getElementById('map');
+    const rect = c.getBoundingClientRect();
+    const ev = (type, id, x, y) => c.dispatchEvent(new PointerEvent(type, { pointerId: id, pointerType: 'touch', clientX: rect.left + x, clientY: rect.top + y, bubbles: true, isPrimary: id === 1 }));
+    const cx = rect.width / 2, cy = rect.height / 2;
+    const before = window.PP._toMap(cx, cy);          // map point under the midpoint
+    ev('pointerdown', 1, cx - 40, cy); ev('pointerdown', 2, cx + 40, cy);
+    ev('pointermove', 1, cx - 120, cy); ev('pointermove', 2, cx + 120, cy); // spread: 3x zoom
+    const during = window.PP._toMap(cx, cy);
+    const s1 = window.PP._view().s;
+    ev('pointerup', 2, cx + 120, cy);                  // lift one finger
+    ev('pointermove', 1, cx - 120 + 50, cy + 30);      // keep dragging with the other
+    const after = window.PP._toMap(cx + 50, cy + 30);  // the point that was under finger 1 should still be under it
+    const under1 = window.PP._toMap(cx - 120, cy);
+    ev('pointerup', 1, cx - 70, cy + 30);
+    return { drift: Math.hypot(during[0] - before[0], during[1] - before[1]), s1, s0: window.PP._view().sMin, phase: window.PP.state().phase };
+  });
+  expect(r.drift).toBeLessThan(1);      // in map units: no wander while pinching
+  expect(r.phase).toBe('guess');        // a pinch never counts as a pin
+});
+
 test('every listed country has a map shape and its capital sits inside it', async ({ page }) => {
   const bad = await page.evaluate(() => {
     const geo = window.PP.decodeTopo(window.WORLD_TOPO);

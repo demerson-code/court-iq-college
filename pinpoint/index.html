@@ -311,6 +311,39 @@
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
   @media (max-width: 560px) {
+    /* one-row top bar */
+    .hud { gap: 8px 12px; padding-top: calc(6px + env(safe-area-inset-top)); padding-bottom: 6px; }
+    .hud .mode { display: none; }
+    .stat.best { display: none; }
+    .stat.score .v { font-size: 22px; }
+    .bar-pill { width: auto; padding: 3px 8px; }
+    .bar-pill .k { display: none; }
+    .bar-pill .v { font-size: 13px; }
+    .bar-pill .v small { display: block; margin: 0; font-size: 10.5px; }
+    /* compact prompt and card */
+    .prompt { top: 8px; padding: 6px 12px 8px; }
+    .prompt .name { font-size: clamp(22px, 7vw, 30px); margin: 0 0 2px; }
+    .prompt .sub { font-size: 11.5px; }
+    .prompt .hint { margin-top: 5px; }
+    .hint-btn { padding: 4px 10px; font-size: 12px; }
+    .hint-text { font-size: 12px; max-width: 40ch; }
+    .result { bottom: calc(8px + env(safe-area-inset-bottom)); width: calc(100% - 16px); padding: 10px 12px 10px; gap: 3px 10px; }
+    .result h2 { font-size: 16px; }
+    .result p { font-size: 12.5px; }
+    .result .pts { font-size: 24px; }
+    .result .learn { padding: 6px 8px; gap: 8px; }
+    .result .learn .flag { width: 32px; }
+    .result .learn .hook { font-size: 12px; line-height: 1.3; }
+    .result .learn .near { font-size: 11.5px; }
+    .result .learn .tip { display: none; }
+    .result .learn .explore-line { color: #0F3D5C; font-weight: 600; }
+    .result .track { margin-top: 4px; }
+    .result .foot { margin-top: 2px; }
+    .result .need { font-size: 11px; }
+    .btn { padding: 8px 14px; font-size: 13px; white-space: nowrap; }
+    .stats { gap: 10px; }
+    .explore-tag { display: none; }
+    .stamp { top: 30%; }
     /* the result card owns the bottom of a phone screen; park the zoom buttons top-right */
     .zoom { top: calc(12px + env(safe-area-inset-top)); bottom: auto; }
     .prompt { max-width: calc(100% - 112px); }
@@ -322,7 +355,6 @@
     .stat .v { font-size: 15px; }
     .stat.score .v { font-size: 24px; }
     .card.intro h1 { font-size: 40px; }
-    .bar-pill { width: 100%; }
     .result { padding: 12px 14px; gap: 4px 12px; }
     .result h2 { font-size: 18px; }
     .result .pts { font-size: 28px; }
@@ -347,7 +379,7 @@
     <div class="stats">
       <div class="stat"><span class="k">Round</span><span class="v" id="hudRound">–</span></div>
       <div class="stat score"><span class="k">Score</span><span class="v" id="hudScore">0</span><span class="pop" id="scorePop" aria-hidden="true"></span></div>
-      <div class="stat"><span class="k">Best</span><span class="v" id="hudBest">0</span></div>
+      <div class="stat best"><span class="k">Best</span><span class="v" id="hudBest">0</span></div>
     </div>
     <div class="bar-pill" title="The round's 7 pins must add up to at least this to advance">
       <span class="k">Round bar</span>
@@ -394,7 +426,7 @@
       <div class="pts" id="resPts"><span id="resPtsNum">+4,180</span><span class="bonus" id="resBonus" hidden></span><span class="bonus hintcost" id="resHint" hidden></span></div>
       <div class="learn" id="resLearn" hidden>
         <img class="flag" id="resFlag" alt="" width="40" height="27" hidden>
-        <div class="learn-text"><div class="hook" id="resHook"></div><div class="near" id="resNear"></div><div class="tip">Tap any other country on the map to see its name and neighbors.</div></div>
+        <div class="learn-text"><div class="hook" id="resHook"></div><div class="near" id="resNear"></div><div class="near explore-line" id="resExplore" hidden></div><div class="tip">Tap any other country on the map to see its name and neighbors.</div></div>
       </div>
       <div class="track"><div class="fill" id="resFill"></div></div>
       <div class="foot">
