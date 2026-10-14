@@ -549,7 +549,7 @@
   function revealTarget(g, t) {
     const pts = [proj(t.lon, t.lat)];
     if (!g.timedOut) pts.push(proj(g.lon, g.lat));
-    if (P.mode === 'countries') pts.push(...t.geo.bbox);
+    if (P.mode !== 'capitals') pts.push(...t.geo.bbox);
     if (G.explore && G.explore !== t.geo) pts.push(...G.explore.bbox);
     return fitPointsTarget(pts);
   }
@@ -589,7 +589,7 @@
     ctx.lineJoin = 'round';
     for (const c of countries) { ctx.fill(c.path); ctx.stroke(c.path); }
 
-    if (revealed && P.mode === 'countries') {
+    if (revealed && P.mode !== 'capitals') {
       const t = G.target.geo;
       ctx.fillStyle = C.hit;
       ctx.fill(t.path);
@@ -1061,7 +1061,7 @@
     stopTimer();
     const [lon, lat] = ll;
     const t = G.target;
-    const inside = P.mode === 'countries' && pointInRings(lon, lat, t.geo.polys);
+    const inside = P.mode !== 'capitals' && pointInRings(lon, lat, t.geo.polys);
     const mi = haversineMi(lat, lon, t.lat, t.lon);
     const raw = pointsFor(mi, inside);
     const pts = G.hinted && !isLearn() ? Math.max(0, raw - HINT_COST) : raw;

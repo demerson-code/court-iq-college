@@ -231,9 +231,10 @@ test('learn mode: pool is weak spots + deep cuts, no bar, free escalating hints 
   }
   await expect(page.locator('#hintBtn')).toBeDisabled();
   await expect(page.locator('#hintText')).toContainText('outlined and flashing');
-  // a hinted bullseye still scores the full 5,000 in learn mode
-  const s = await page.evaluate(() => { const G = window.PP.state(); window.PP.guessLatLon(G.target.lat, G.target.lon); return { pts: G.guess.pts, level: G.hintLevel }; });
+  // a hinted bullseye still scores the full 5,000 in learn mode, and landing inside the country counts
+  const s = await page.evaluate(() => { const G = window.PP.state(); window.PP.guessLatLon(G.target.lat, G.target.lon); return { pts: G.guess.pts, level: G.hintLevel, inside: G.guess.inside }; });
   expect(s.pts).toBe(5000);
+  expect(s.inside).toBe(true);
   await expect(page.locator('#resHint')).toBeHidden();
   // seven far misses never end a learn set
   for (let i = 2; i <= 7; i++) {
