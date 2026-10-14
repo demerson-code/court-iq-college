@@ -6,7 +6,7 @@ the repo root via GitHub Pages.
 
 - **Live**: https://demerson-code.github.io/court-iq-college/
 - **Local preview**: `python -m http.server 3460` → http://localhost:3460/
-- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 14 Pinpoint, ~24s)
+- **Tests**: `npm test` (Playwright, 10 algorithm assertions + 16 Pinpoint, ~37s)
 - **Deploy**: `git push origin main` (GitHub Pages auto-deploys, 30–90s)
 - **Plan**: `PLAN.md` (untracked by intent — owns the per-block scope; don't
   duplicate it here)
@@ -32,6 +32,15 @@ difficulty min(r, 5).
   one-line memory hook per country. Teach mode (pref `teach`, default on)
   labels the target and its bordering countries on the reveal; borders come
   from shared TopoJSON arcs, islands fall back to the 3 nearest capitals.
+- Play log (this device only): `pinpoint_stats_v1` per country {n, miss, sumMi,
+  bestMi, hints}; `pinpoint_runs_v1` one row per run with `end: 'bar'|'left'`;
+  `pinpoint_live_v1` holds the run in progress and is swept into runs as
+  'left' on the next boot. "Your record" panel on the start screen renders it.
+- Learn mode (`P.mode === 'learn'`): pool = up to 12 weak spots (weakness ≥
+  0.3) + 10 least-seen difficulty-4/5 countries, weak ones drawn 2x; no bar,
+  sets never end; hints free and escalating 1..5 (hook → neighbours + fly to
+  region → 800 mi circle → 250 mi circle → outline flashes). `hintCamera`,
+  `drawHintOverlay`.
 - Hint: up to `HINTS_PER_ROUND` (3) a round, one per pin (`G.hintsUsed`),
   reveals hook + neighbors, costs `HINT_COST` (1,500) off that pin. Key `h`.
 - Explore: while a result is up, a tap on any country highlights it and shows

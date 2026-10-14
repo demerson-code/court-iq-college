@@ -180,6 +180,70 @@ test('pinch keeps the map point under the fingers fixed and hands off to one fin
   expect(r.phase).toBe('guess');        // a pinch never counts as a pin
 });
 
+test('play log: every pin is recorded, a run ending on the bar is logged, a live run left behind is logged as abandoned', async ({ page }) => {
+  test.setTimeout(45_000);
+  await page.evaluate(() => { localStorage.clear(); window.PP.setPrefs({ mode: 'countries', region: 'world', timer: false }); });
+  await page.click('#startBtn'); await page.click('#introBtn');
+  // two pins: one bullseye, one far miss
+  const names = await page.evaluate(() => {
+    const out = [];
+    let G = window.PP.state(); out.push(G.target.mapName); window.PP.guessLatLon(G.target.lat, G.target.lon);
+    G.revealedAt = null; window.PP.advance();
+    G = window.PP.state(); out.push(G.target.mapName);
+    const lon = G.target.lon > 0 ? G.target.lon - 180 : G.target.lon + 180;
+    window.PP.guessLatLon(Math.max(-50, Math.min(50, -G.target.lat)), lon);
+    return out;
+  });
+  const stats = await page.evaluate(() => window.PP.stats());
+  expect(stats[names[0]].n).toBe(1); expect(stats[names[0]].miss).toBe(0);
+  expect(stats[names[1]].n).toBe(1); expect(stats[names[1]].miss).toBe(1);
+  expect(await page.evaluate(() => window.PP.weakness(window.COUNTRIES[0][0]) === null || typeof window.PP.weakness(window.COUNTRIES[0][0]) === 'number')).toBe(true);
+  // the run is live on disk; reloading mid-run logs it as abandoned
+  await page.reload(); await page.waitForFunction(() => window.PP && window.PP.state);
+  const runs = await page.evaluate(() => window.PP.runs());
+  expect(runs.length).toBe(1);
+  expect(runs[0].end).toBe('left');
+  expect(runs[0].round).toBe(1);
+  await expect(page.locator('#stats')).toContainText('Your record');
+  await expect(page.locator('#stats')).toContainText('1 run');
+});
+
+test('learn mode: pool is weak spots + deep cuts, no bar, free escalating hints to level 5', async ({ page }) => {
+  test.setTimeout(45_000);
+  await page.evaluate(() => {
+    localStorage.clear();
+    // seed a record: Chad missed badly three times
+    localStorage.setItem('pinpoint_stats_v1', JSON.stringify({ Chad: { n: 3, miss: 3, sumMi: 4500, bestMi: 1200, hints: 0, last: 1 } }));
+  });
+  await page.reload(); await page.waitForFunction(() => window.PP && window.PP.state);
+  await page.evaluate(() => window.PP.setPrefs({ mode: 'learn', region: 'world', timer: false, teach: true }));
+  const pool = await page.evaluate(() => { const L = window.PP.learnPool(); return { weak: L.weak.map((c) => c.mapName), rare: L.rare.map((c) => c.tier) }; });
+  expect(pool.weak).toEqual(['Chad']);
+  expect(pool.rare.length).toBe(10);
+  for (const t of pool.rare) expect(t).toBeGreaterThanOrEqual(4);
+  await page.click('#startBtn');
+  await expect(page.locator('#introRound')).toHaveText('Learn · set 1');
+  await page.click('#introBtn');
+  await expect(page.locator('#hintBtn')).toHaveText('Hint (free)');
+  for (let lv = 1; lv <= 5; lv++) {
+    await page.click('#hintBtn');
+    await expect(page.locator('#hintCount')).toHaveText(`Level ${lv} of 5`);
+  }
+  await expect(page.locator('#hintBtn')).toBeDisabled();
+  await expect(page.locator('#hintText')).toContainText('outlined and flashing');
+  // a hinted bullseye still scores the full 5,000 in learn mode
+  const s = await page.evaluate(() => { const G = window.PP.state(); window.PP.guessLatLon(G.target.lat, G.target.lon); return { pts: G.guess.pts, level: G.hintLevel }; });
+  expect(s.pts).toBe(5000);
+  await expect(page.locator('#resHint')).toBeHidden();
+  // seven far misses never end a learn set
+  for (let i = 2; i <= 7; i++) {
+    await page.waitForTimeout(550); await page.click('#resBtn');
+    await page.evaluate(() => { const G = window.PP.state(); const lon = G.target.lon > 0 ? G.target.lon - 180 : G.target.lon + 180; window.PP.guessLatLon(Math.max(-50, Math.min(50, -G.target.lat)), lon); });
+  }
+  expect(await page.evaluate(() => window.PP.state().phase)).toBe('roundEnd');
+  await expect(page.locator('#resBtn')).toHaveText('Continue');
+});
+
 test('every listed country has a map shape and its capital sits inside it', async ({ page }) => {
   const bad = await page.evaluate(() => {
     const geo = window.PP.decodeTopo(window.WORLD_TOPO);

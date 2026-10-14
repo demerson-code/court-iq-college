@@ -39,6 +39,12 @@
   const PREFS_KEY = 'pinpoint_prefs_v1';
   const NAME_KEY = 'pinpoint_name_v1';
   const BOARD_KEY = 'pinpoint_board_v1';
+  const STATS_KEY = 'pinpoint_stats_v1';   // per-country record: seen, missed, miles
+  const RUNS_KEY = 'pinpoint_runs_v1';     // one entry per finished or abandoned run
+  const LIVE_KEY = 'pinpoint_live_v1';     // the run in progress (abandon detection)
+  const LEARN_WEAK = 12;                   // weak spots per learn pool
+  const LEARN_RARE = 10;                   // deep cuts per learn pool
+  const HINT_MAX_LEVEL = 5;                // learn mode: hints escalate 1..5
 
   const REGIONS = { world: 'World', EU: 'Europe', AM: 'Americas', AF: 'Africa', AP: 'Asia & Pacific' };
   const DIFF_LABELS = { 1: 'Household names', 2: 'Well known', 3: 'Getting harder', 4: 'Obscure', 5: 'Deep cuts' };
@@ -190,7 +196,7 @@
   }
 
   window.PP = { haversineMi, pointsFor, barFor, avgNeedFor, difficultyFor, celebrationLevel, milesForPoints, speedBonus, pointInRings, decodeTopo,
-    MAX_PTS, ZERO_AT_MI, BULLSEYE_MI, ROUND_SECS, PINS_PER_ROUND, CELEBRATE_MI, HINT_COST, HINTS_PER_ROUND, REGIONS };
+    MAX_PTS, ZERO_AT_MI, BULLSEYE_MI, ROUND_SECS, PINS_PER_ROUND, CELEBRATE_MI, HINT_COST, HINTS_PER_ROUND, HINT_MAX_LEVEL, REGIONS };
 
   // ---- DOM --------------------------------------------------------------
   const $ = (id) => document.getElementById(id);
@@ -204,7 +210,7 @@
     promptTimerNum: $('promptTimerNum'), hintBtn: $('hintBtn'), hintCount: $('hintCount'), hintText: $('hintText'), resHint: $('resHint'),
     result: $('result'), resTitle: $('resTitleText'), resDetail: $('resDetail'),
     resPts: $('resPts'), resPtsNum: $('resPtsNum'), resBonus: $('resBonus'), resFill: $('resFill'), resNeed: $('resNeed'), resBtn: $('resBtn'),
-    start: $('start'), startBtn: $('startBtn'), startBest: $('startBest'), options: $('options'),
+    start: $('start'), startBtn: $('startBtn'), startBest: $('startBest'), options: $('options'), stats: $('stats'),
     intro: $('intro'), introPrev: $('introPrev'), introRound: $('introRound'), introDiff: $('introDiff'),
     introNeed: $('introNeed'), introPace: $('introPace'), introBtn: $('introBtn'), scorePop: $('scorePop'),
     over: $('over'), overScore: $('overScore'), overRounds: $('overRounds'),
@@ -344,6 +350,8 @@
     explore: null,       // country tapped on the map while a result is showing
     hintsUsed: 0,        // hints spent this round
     hinted: false,       // hint used on the current pin
+    hintLevel: 0,        // learn mode: how far the hint has escalated on this pin
+    learn: null,         // learn mode: the pool for this session
     guess: null,         // {lat, lon, mi, pts, inside, bonus, timedOut}
     history: [],         // one entry per finished pin
     best: loadBest(),
@@ -362,7 +370,7 @@
   function loadPrefs() {
     const p = loadJSON(PREFS_KEY, {});
     return {
-      mode: p.mode === 'capitals' ? 'capitals' : 'countries',
+      mode: p.mode === 'capitals' ? 'capitals' : p.mode === 'learn' ? 'learn' : 'countries',
       region: REGIONS[p.region] ? p.region : 'world',
       timer: !!p.timer,
       teach: p.teach !== false,
@@ -371,6 +379,62 @@
   function savePrefs() { saveJSON(PREFS_KEY, P); }
 
   const roster = () => ROSTER.filter((c) => P.region === 'world' || c.region === P.region);
+
+  // ---- play log: every pin, every run, on this device -------------------------------
+  const STATS = loadJSON(STATS_KEY, {});
+  function recordPin(t, g, pace) {
+    const r = STATS[t.mapName] || (STATS[t.mapName] = { n: 0, miss: 0, sumMi: 0, bestMi: null, hints: 0, last: 0 });
+    r.n += 1;
+    if (g.timedOut || g.pts < pace) r.miss += 1;
+    if (g.mi != null) { r.sumMi += g.mi; r.bestMi = r.bestMi == null ? g.mi : Math.min(r.bestMi, g.mi); }
+    if (g.hinted) r.hints += 1;
+    r.last = Date.now();
+    saveJSON(STATS_KEY, STATS);
+  }
+  // 0 = solid, 1 = always missed by a mile. Unseen countries have no score.
+  function weakness(mapName) {
+    const r = STATS[mapName];
+    if (!r || !r.n) return null;
+    const missRate = r.miss / r.n;
+    const avgMi = r.sumMi / Math.max(1, r.n - (r.n - Math.round(r.sumMi > 0 ? r.n : 0)));
+    return Math.min(1, missRate * 0.6 + Math.min(1, (r.sumMi / r.n) / 1500) * 0.4);
+  }
+  function recordRun(end) {
+    if (!G.round) return;
+    const runs = loadJSON(RUNS_KEY, []);
+    runs.push({ ts: Date.now(), mode: P.mode, region: P.region, timer: P.timer, score: G.score,
+      rounds: G.phase === 'over' ? G.round - 1 : G.round - (G.pin < PINS_PER_ROUND ? 1 : 0), round: G.round, pin: G.pin, end });
+    saveJSON(RUNS_KEY, runs.slice(-200));
+    try { localStorage.removeItem(LIVE_KEY); } catch { /* ignore */ }
+  }
+  // While a run is live, keep its state on disk; if the page comes back with it still
+  // there, the player left mid-run. That is the "stopped playing" signal.
+  function markLive() {
+    if (G.phase === 'start' || G.phase === 'over') return;
+    saveJSON(LIVE_KEY, { ts: Date.now(), mode: P.mode, region: P.region, timer: P.timer, score: G.score, round: G.round, pin: G.pin });
+  }
+  function sweepAbandoned() {
+    const live = loadJSON(LIVE_KEY, null);
+    if (!live || !live.round) { try { localStorage.removeItem(LIVE_KEY); } catch { /* ignore */ } return; }
+    const runs = loadJSON(RUNS_KEY, []);
+    runs.push({ ...live, rounds: live.round - 1, end: 'left' });
+    saveJSON(RUNS_KEY, runs.slice(-200));
+    try { localStorage.removeItem(LIVE_KEY); } catch { /* ignore */ }
+  }
+
+  // ---- learn mode: weak spots + deep cuts ---------------------------------------------
+  function learnPool() {
+    const all = roster();
+    const weak = all.map((c) => ({ c, w: weakness(c.mapName) })).filter((x) => x.w != null && x.w >= 0.3)
+      .sort((a, b) => b.w - a.w).slice(0, LEARN_WEAK).map((x) => x.c);
+    const taken = new Set(weak.map((c) => c.mapName));
+    const rare = all.filter((c) => c.tier >= 4 && !taken.has(c.mapName))
+      .map((c) => ({ c, n: (STATS[c.mapName] || { n: 0 }).n }))
+      .sort((a, b) => a.n - b.n || b.c.tier - a.c.tier || Math.random() - 0.5).slice(0, LEARN_RARE).map((x) => x.c);
+    let pool = weak.concat(rare);
+    if (pool.length < PINS_PER_ROUND) pool = pool.concat(all.filter((c) => c.tier === 3 && !pool.includes(c)).slice(0, PINS_PER_ROUND));
+    return { weak, rare, pool };
+  }
 
   // ---- view (zoom / pan) ------------------------------------------------
   const V = { s: 1, ox: 0, oy: 0, sMin: 1, sMax: 16, w: 0, h: 0, dpr: 1 };
@@ -542,6 +606,7 @@
     }
     ctx.restore();
 
+    drawHintOverlay();
     if (revealed && G.guess) drawMarkers();
     if (revealed && P.teach && G.target) drawTeachLabels();
     if (revealed && G.explore) { drawExploreLabels(); positionExploreTag(); }
@@ -738,6 +803,16 @@
   const fmtMi = (mi) => mi < 10 ? mi.toFixed(1) : fmt(mi);
 
   function pickTarget() {
+    if (isLearn()) {
+      if (!G.learn) G.learn = learnPool();
+      let pool = G.learn.pool.filter((c) => !G.used.has(c.mapName));
+      if (!pool.length) { G.used.clear(); pool = G.learn.pool.slice(); }
+      // weak spots come up twice as often as deep cuts
+      const weighted = pool.flatMap((c) => (G.learn.weak.includes(c) ? [c, c] : [c]));
+      const t = weighted[Math.floor(Math.random() * weighted.length)];
+      G.used.add(t.mapName);
+      return t;
+    }
     const all = roster();
     const want = difficultyFor(G.round);
     const unused = (d) => all.filter((c) => c.tier === d && !G.used.has(c.mapName));
@@ -757,6 +832,7 @@
   function startGame() {
     stopTimer();
     G.round = 0; G.pin = 0; G.roundPts = 0; G.score = 0; G.used = new Set(); G.guess = null; G.history = [];
+    G.learn = null;
     nextRound();
   }
 
@@ -774,6 +850,7 @@
     renderHud();
     showIntro();
     draw();
+    markLive();
     snapshot();
   }
 
@@ -784,12 +861,23 @@
     if (G.lastRoundPts != null) {
       ui.introPrev.textContent = `Round ${r - 1} cleared with ${fmt(G.lastRoundPts)} points.`;
     }
-    ui.introRound.textContent = `Round ${r}`;
-    ui.introDiff.textContent = `${DIFF_LABELS[difficultyFor(r)]} · ${P.mode === 'capitals' ? 'capitals' : 'countries'} · ${REGIONS[P.region]}`;
-    ui.introNeed.textContent = `You need ${fmt(need)} points across ${PINS_PER_ROUND} pins to reach round ${r + 1}.`;
-    ui.introPace.textContent = `That's ${fmt(pace)} a pin on average, about ${fmt(milesForPoints(pace))} miles from each capital. ` +
-      `A pin inside the country${P.mode === 'capitals' ? '' : ' or'} within 25 miles of the capital is worth the full ${fmt(MAX_PTS)}.`;
-    ui.introBtn.textContent = r === 1 ? 'Drop the first pin' : `Play round ${r}`;
+    ui.introRound.textContent = isLearn() ? `Learn · set ${r}` : `Round ${r}`;
+    if (isLearn()) {
+      const L = G.learn || (G.learn = learnPool());
+      ui.introDiff.textContent = `Weak spots & deep cuts · ${REGIONS[P.region]}`;
+      ui.introNeed.textContent = L.weak.length
+        ? `${PINS_PER_ROUND} pins from ${L.weak.length} countries you keep missing and ${L.rare.length} rarely-seen ones.`
+        : `No misses on record yet, so this set is ${PINS_PER_ROUND} rarely-seen countries. Your weak spots join the pool as you play.`;
+      ui.introPace.textContent = `No bar and nothing ends the set. Hints are free and unlimited: press Hint again on the same country and each one gives more away, ` +
+        `up to pointing right at it.`;
+      ui.introBtn.textContent = r === 1 ? 'Start learning' : `Next set`;
+    } else {
+      ui.introDiff.textContent = `${DIFF_LABELS[difficultyFor(r)]} · ${P.mode === 'capitals' ? 'capitals' : 'countries'} · ${REGIONS[P.region]}`;
+      ui.introNeed.textContent = `You need ${fmt(need)} points across ${PINS_PER_ROUND} pins to reach round ${r + 1}.`;
+      ui.introPace.textContent = `That's ${fmt(pace)} a pin on average, about ${fmt(milesForPoints(pace))} miles from each capital. ` +
+        `A pin inside the country${P.mode === 'capitals' ? '' : ' or'} within 25 miles of the capital is worth the full ${fmt(MAX_PTS)}.`;
+      ui.introBtn.textContent = r === 1 ? 'Drop the first pin' : `Play round ${r}`;
+    }
     show(ui.intro);
     ui.introBtn.focus({ preventScroll: true });
   }
@@ -807,6 +895,7 @@
     G.target = pickTarget();
     G.guess = null;
     G.hinted = false;
+    G.hintLevel = 0;
     G.phase = 'guess';
     animateTo(fitTarget(), 450);
     renderHud();
@@ -831,6 +920,15 @@
 
   // ---- hint: one per round, costs HINT_COST off the pin it is used on ----------
   function renderHint() {
+    if (isLearn()) {
+      const lv = G.hintLevel;
+      ui.hintText.hidden = lv === 0;
+      ui.hintBtn.hidden = false;
+      ui.hintBtn.disabled = lv >= HINT_MAX_LEVEL;
+      ui.hintBtn.textContent = lv === 0 ? 'Hint (free)' : lv >= HINT_MAX_LEVEL ? 'That is all the help there is' : 'More help';
+      ui.hintCount.textContent = lv === 0 ? 'unlimited · each one gives more away' : `Level ${lv} of ${HINT_MAX_LEVEL}`;
+      return;
+    }
     const used = G.hintsUsed, left = HINTS_PER_ROUND - used;
     ui.hintText.hidden = !G.hinted;
     ui.hintBtn.hidden = G.hinted;
@@ -841,8 +939,20 @@
       : `Used ${used} of ${HINTS_PER_ROUND}`;
   }
   function useHint() {
-    if (G.phase !== 'guess' || G.hinted || G.hintsUsed >= HINTS_PER_ROUND) return;
+    if (G.phase !== 'guess') return;
     const t = G.target;
+    if (isLearn()) {
+      if (G.hintLevel >= HINT_MAX_LEVEL) return;
+      G.hintLevel += 1;
+      G.hinted = true;
+      ui.hintText.textContent = hintTextFor(t, G.hintLevel);
+      hintCamera(t, G.hintLevel);
+      renderHint();
+      draw();
+      snapshot();
+      return;
+    }
+    if (G.hinted || G.hintsUsed >= HINTS_PER_ROUND) return;
     G.hintsUsed += 1;
     G.hinted = true;
     const where = neighborSentence(neighborsOf(t));
@@ -850,6 +960,69 @@
     renderHint();
     snapshot();
   }
+
+  // Learn-mode hint ladder. Each level adds to the last.
+  //   1  the memory hook
+  //   2  the neighbours, and the map flies to its part of the world
+  //   3  a wide circle on the map: "somewhere in here" (800 mi), map zooms to it
+  //   4  a tight circle (250 mi), closer still
+  //   5  the country's outline flashes: tap it
+  const HINT_RADIUS_MI = { 3: 800, 4: 250 };
+  function hintTextFor(t, lv) {
+    const where = neighborSentence(neighborsOf(t));
+    const parts = [t.hook || ''];
+    if (lv >= 2) parts.push(where, `It's in ${REGIONS[t.region]}.`);
+    if (lv === 3) parts.push(`It's inside the dashed circle, within ${fmt(HINT_RADIUS_MI[3])} miles of the centre.`);
+    if (lv === 4) parts.push(`Tighter: inside the small circle, within ${fmt(HINT_RADIUS_MI[4])} miles.`);
+    if (lv >= 5) parts.push(`That's it, outlined and flashing. Tap it to lock it in.`);
+    return parts.filter(Boolean).join(' ');
+  }
+  function hintCamera(t, lv) {
+    const [cx, cy] = proj(t.lon, t.lat);
+    if (lv === 2) {
+      // its part of the world: a window ~5,000 mi wide around the region centre, nudged toward the country
+      const r = milesToMapUnits(2500, t.lat);
+      animateTo(fitPointsTarget([[cx - r, cy - r * 0.6], [cx + r, cy + r * 0.6]]), 700);
+    } else if (lv === 3 || lv === 4) {
+      const r = milesToMapUnits(HINT_RADIUS_MI[lv] * 1.6, t.lat);
+      animateTo(fitPointsTarget([[cx - r, cy - r], [cx + r, cy + r]]), 700);
+    } else if (lv >= 5) {
+      animateTo(fitPointsTarget([...t.geo.bbox]), 700);
+    }
+  }
+  function drawHintOverlay() {
+    const lv = G.hintLevel, t = G.target;
+    if (!lv || !t || G.phase !== 'guess') return;
+    const { dpr, s, ox, oy } = V;
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 350);
+    if (lv === 3 || lv === 4) {
+      ctx.save();
+      ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * ox, dpr * oy);
+      ctx.beginPath();
+      const [cx, cy] = proj(t.lon, t.lat);
+      ctx.arc(cx, cy, milesToMapUnits(HINT_RADIUS_MI[lv], t.lat), 0, Math.PI * 2);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.setLineDash([10, 8]);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = `rgba(224,69,47,${0.55 + 0.45 * pulse})`;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+    if (lv >= 5) {
+      ctx.save();
+      ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * ox, dpr * oy);
+      ctx.fillStyle = `rgba(245,196,81,${0.25 + 0.35 * pulse})`;
+      ctx.fill(t.geo.path);
+      ctx.strokeStyle = '#E0452F';
+      ctx.lineWidth = 3 / s;
+      ctx.setLineDash([12 / s, 8 / s]);
+      ctx.stroke(t.geo.path);
+      ctx.restore();
+    }
+    if (!hintRaf) hintRaf = requestAnimationFrame(() => { hintRaf = 0; if (G.hintLevel >= 3 && G.phase === 'guess') draw(); });
+  }
+  let hintRaf = 0;
 
   // ---- timer --------------------------------------------------------------
   function startTimer() {
@@ -891,7 +1064,7 @@
     const inside = P.mode === 'countries' && pointInRings(lon, lat, t.geo.polys);
     const mi = haversineMi(lat, lon, t.lat, t.lon);
     const raw = pointsFor(mi, inside);
-    const pts = G.hinted ? Math.max(0, raw - HINT_COST) : raw;
+    const pts = G.hinted && !isLearn() ? Math.max(0, raw - HINT_COST) : raw;
     const bonus = P.timer && pts >= avgNeedFor(G.round) ? speedBonus(left) : 0;
     settlePin({ lat, lon, mi, pts, inside, bonus, timedOut: false, hinted: G.hinted });
   }
@@ -906,8 +1079,10 @@
     G.roundPts += g.pts;
     G.score += g.pts + g.bonus;
     if (G.pin < PINS_PER_ROUND) G.phase = 'result';
-    else G.phase = G.roundPts >= barFor(G.round) ? 'roundEnd' : 'over';
+    else G.phase = isLearn() || G.roundPts >= barFor(G.round) ? 'roundEnd' : 'over';
     G.revealedAt = performance.now();
+    recordPin(t, g, avgNeedFor(G.round));
+    if (G.phase === 'over') recordRun('bar'); else markLive();
 
     autoExplore(g, t);
     hide(ui.prompt);
@@ -958,16 +1133,20 @@
     ui.resPtsNum.textContent = `+${fmt(g.pts)}`;
     ui.resBonus.textContent = g.bonus ? `+${fmt(g.bonus)} speed bonus` : '';
     ui.resBonus.hidden = !g.bonus;
-    ui.resHint.textContent = g.hinted ? `after a −${fmt(HINT_COST)} hint` : '';
-    ui.resHint.hidden = !g.hinted;
+    ui.resHint.textContent = g.hinted && !isLearn() ? `after a −${fmt(HINT_COST)} hint` : '';
+    ui.resHint.hidden = !(g.hinted && !isLearn());
     // the track shows the round so far against the round bar
     ui.resFill.style.width = `${Math.min(100, (G.roundPts / (MAX_PTS * PINS_PER_ROUND)) * 100)}%`;
     ui.result.style.setProperty('--need', `${(need / (MAX_PTS * PINS_PER_ROUND)) * 100}%`);
     if (G.phase === 'result') {
-      ui.resNeed.textContent = `Round ${G.round}: ${fmt(G.roundPts)} of ${fmt(need)} · ${left} pin${left === 1 ? '' : 's'} left`;
+      ui.resNeed.textContent = isLearn()
+        ? `Set ${G.round}: ${fmt(G.roundPts)} so far · ${left} pin${left === 1 ? '' : 's'} left`
+        : `Round ${G.round}: ${fmt(G.roundPts)} of ${fmt(need)} · ${left} pin${left === 1 ? '' : 's'} left`;
       ui.resBtn.textContent = 'Next pin';
     } else if (G.phase === 'roundEnd') {
-      ui.resNeed.textContent = `Round ${G.round} cleared: ${fmt(G.roundPts)} of ${fmt(need)} needed`;
+      ui.resNeed.textContent = isLearn()
+        ? `Set ${G.round} done: ${fmt(G.roundPts)} points`
+        : `Round ${G.round} cleared: ${fmt(G.roundPts)} of ${fmt(need)} needed`;
       ui.resBtn.textContent = 'Continue';
     } else {
       ui.resNeed.textContent = `Round ${G.round} missed: ${fmt(G.roundPts)} of ${fmt(need)} needed`;
@@ -1023,8 +1202,10 @@
     snapshot();
   }
 
+  const isLearn = () => P.mode === 'learn';
   function modeLabel() {
-    return `${P.mode === 'capitals' ? 'Capitals' : 'Countries'} · ${REGIONS[P.region]}${P.timer ? ' · Timed' : ''}`;
+    const m = P.mode === 'capitals' ? 'Capitals' : P.mode === 'learn' ? 'Learn' : 'Countries';
+    return `${m} · ${REGIONS[P.region]}${P.timer ? ' · Timed' : ''}`;
   }
 
   function el(tag, cls, text) {
@@ -1084,7 +1265,51 @@
     ui.startBest.textContent = G.best.score
       ? `Personal best: ${fmt(G.best.score)} points over ${G.best.rounds} rounds.`
       : `${n} ${P.mode === 'capitals' ? 'capitals' : 'countries'} in play, ${PINS_PER_ROUND} a round.`;
+    if (isLearn()) {
+      const pool = learnPool();
+      ui.startBest.textContent = `Learn: ${pool.weak.length} weak spot${pool.weak.length === 1 ? '' : 's'} + ${pool.rare.length} deep cuts in the pool. No bar, free hints.`;
+    }
+    renderStats();
   }
+  function renderStats() {
+    const box = ui.stats;
+    if (!box) return;
+    box.replaceChildren();
+    const entries = Object.entries(STATS).filter(([, r]) => r.n > 0);
+    const pins = entries.reduce((a, [, r]) => a + r.n, 0);
+    const runs = loadJSON(RUNS_KEY, []);
+    if (!pins) {
+      box.append(el('div', 'stats-empty', 'Play a few rounds and your weak spots show up here.'));
+      return;
+    }
+    const misses = entries.reduce((a, [, r]) => a + r.miss, 0);
+    const head = el('div', 'stats-head');
+    head.append(el('b', null, 'Your record'));
+    head.append(el('span', null, `${fmt(pins)} pins · ${Math.round((1 - misses / pins) * 100)}% on pace · ${entries.length} of ${ROSTER.length} countries seen`));
+    box.append(head);
+    const weak = entries.map(([m, r]) => ({ c: rosterByMap.get(m), r, w: weakness(m) }))
+      .filter((x) => x.c && x.w != null && x.w >= 0.3).sort((a, b) => b.w - a.w).slice(0, 8);
+    if (weak.length) {
+      const ul = el('ul', 'stats-list');
+      for (const x of weak) {
+        const li = el('li');
+        li.append(el('span', 'name', x.c.name));
+        li.append(el('span', 'mi', `${fmt(x.r.sumMi / x.r.n)} mi avg · ${x.r.miss}/${x.r.n} missed`));
+        ul.append(li);
+      }
+      box.append(el('div', 'stats-k', 'Weak spots'));
+      box.append(ul);
+    }
+    if (runs.length) {
+      const ended = runs.filter((r) => r.end === 'bar'), left = runs.filter((r) => r.end === 'left');
+      const byRound = {};
+      for (const r of ended) byRound[r.round] = (byRound[r.round] || 0) + 1;
+      const rs = Object.keys(byRound).sort((a, b) => a - b).map((k) => `R${k}: ${byRound[k]}`).join(' · ');
+      box.append(el('div', 'stats-k', 'Runs'));
+      box.append(el('div', 'stats-runs', `${runs.length} run${runs.length === 1 ? '' : 's'}. ${ended.length} ended on the bar${rs ? ` (${rs})` : ''}. ${left.length} walked away mid-run.`));
+    }
+  }
+
   ui.options.addEventListener('click', (e) => {
     const b = e.target.closest('button[data-k]');
     if (!b) return;
@@ -1350,7 +1575,7 @@
     if (!window.claude?.hot?.snapshot) return;
     window.claude.hot.snapshot({
       phase: G.phase, round: G.round, pin: G.pin, roundPts: G.roundPts, lastRoundPts: G.lastRoundPts, score: G.score,
-      hintsUsed: G.hintsUsed, hinted: G.hinted, hintText: ui.hintText.textContent,
+      hintsUsed: G.hintsUsed, hinted: G.hinted, hintLevel: G.hintLevel, hintText: ui.hintText.textContent,
       used: [...G.used], target: G.target?.mapName, guess: G.guess, history: G.history,
     });
   }
@@ -1360,7 +1585,7 @@
     if (!t) return false;
     G.round = d.round; G.pin = d.pin || 1; G.roundPts = d.roundPts || 0; G.score = d.score; G.used = new Set(d.used); G.target = t;
     G.guess = d.guess; G.phase = d.phase; G.history = d.history || [];
-    G.hintsUsed = d.hintsUsed || 0; G.hinted = !!d.hinted; ui.hintText.textContent = d.hintText || '';
+    G.hintsUsed = d.hintsUsed || 0; G.hinted = !!d.hinted; G.hintLevel = d.hintLevel || 0; ui.hintText.textContent = d.hintText || '';
     hide(ui.start); hide(ui.over); hide(ui.result); hide(ui.prompt); hide(ui.intro);
     renderHud();
     if (d.phase === 'intro') {
@@ -1490,6 +1715,7 @@
 
   // ---- boot -------------------------------------------------------------
   function boot(saved) {
+    sweepAbandoned();
     renderOptions();
     resize();
     if (!restore(saved)) { renderHud(); show(ui.start); }
@@ -1515,6 +1741,10 @@
   window.PP.useHint = useHint;
   window.PP.exploreLatLon = (lat, lon) => { const [px, py] = toScreen(...proj(lon, lat)); exploreAt(px, py); };
   window.PP.clearExplore = clearExplore;
+  window.PP.stats = () => STATS;
+  window.PP.runs = () => loadJSON(RUNS_KEY, []);
+  window.PP.learnPool = learnPool;
+  window.PP.weakness = weakness;
   window.PP._view = () => ({ s: V.s, ox: V.ox, oy: V.oy, w: V.w, h: V.h });
   window.PP._toMap = (px, py) => toMap(px, py);
   window.PP.celebrate = (level) => { const G2 = G; const t = G2.target; celebrate(level, { mi: [400, 200, 80, 20, 3][level - 1] }, t); };

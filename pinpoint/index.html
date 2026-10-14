@@ -279,6 +279,18 @@
   .seg button.on { background: var(--navy); border-color: var(--navy); color: var(--on-navy); }
   .opt-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.4; }
 
+  /* your record, on the start screen */
+  .record { margin: 0 0 16px; padding: 10px 12px; border-radius: 10px; background: var(--panel-2); font-size: 12.5px; }
+  .stats-empty { color: var(--muted); }
+  .stats-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; color: var(--ink-2); }
+  .stats-head b { color: var(--navy); }
+  .stats-k { margin-top: 8px; font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  .stats-list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 2px 14px; }
+  .stats-list li { display: flex; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; }
+  .stats-list .name { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stats-list .mi { color: var(--muted); font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+  .stats-runs { color: var(--ink-2); margin-top: 2px; }
+
   /* game-over panels */
   .card.wide { width: min(720px, 100%); }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 0 0 18px; }
@@ -348,6 +360,7 @@
     .zoom { top: calc(12px + env(safe-area-inset-top)); bottom: auto; }
     .prompt { max-width: calc(100% - 112px); }
     .two-col { grid-template-columns: 1fr; }
+    .stats-list { grid-template-columns: 1fr; }
     .opt-row { grid-template-columns: 1fr; gap: 4px; }
     .hud { gap: 10px; padding: 8px 12px; }
     .brand { font-size: 17px; }
@@ -453,12 +466,14 @@
             <span><b>Seven pins make a round.</b> Their total must clear the round bar: 10,500 in round 1, rising 3,500 a round. Round 1 is household names; by round 5 it's the deep cuts. Miss the bar and the run ends.</span>
           </li>
         </ul>
+        <div class="record" id="stats"></div>
         <div class="options" id="options">
           <div class="opt-row">
             <span class="opt-k">Target</span>
             <div class="seg" role="group" aria-label="Target">
               <button type="button" data-k="mode" data-v="countries">Countries</button>
               <button type="button" data-k="mode" data-v="capitals">Capitals</button>
+              <button type="button" data-k="mode" data-v="learn">Learn</button>
             </div>
           </div>
           <div class="opt-row">
@@ -485,7 +500,7 @@
               <button type="button" data-k="timer" data-v="true">12 s a round</button>
             </div>
           </div>
-          <p class="opt-note">Up to three hints a round, one per pin: each reveals the memory hook and the neighbors and costs 1,500 off that pin. Teach labels the country and its neighbors on the map after every pin, with its flag and a one-line memory hook. Capitals mode counts only the city: no credit for landing inside the country. With the timer on, a pin that keeps pace with time left adds a speed bonus of up to 1,000; a timed-out pin scores 0 but the round goes on.</p>
+          <p class="opt-note"><b>Learn</b> drills the countries you keep missing plus rarely-seen ones: no bar, free hints that give more away each press. <b>Capitals</b> counts only the city. <b>Teach</b> labels the answer and its neighbors after every pin. <b>Timer</b> adds a speed bonus; a timed-out pin scores 0. Up to three paid hints a round in Countries and Capitals.</p>
         </div>
         <div class="actions">
           <button class="btn" id="startBtn" type="button">Start</button>
